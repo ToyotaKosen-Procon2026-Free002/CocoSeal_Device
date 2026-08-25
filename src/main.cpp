@@ -278,6 +278,7 @@ float getBatteryPercent() {
 }
 
 bool sended = false;
+bool isAlarmActive = false;
 
 void loop() {
   if (espNowRecvFlag) {
@@ -316,6 +317,8 @@ void loop() {
   }
 
   if (digitalRead(BUTTON_1_PIN) == LOW) {
+    isAlarmActive = true;
+
     digitalWrite(BUZZER_PIN, HIGH);
     digitalWrite(RED_LED_PIN, LOW);
     digitalWrite(GREEN_LED_PIN, HIGH);
@@ -323,9 +326,12 @@ void loop() {
     if (!sended) LoRaSendTask();
     sended = true;
   } else if (digitalRead(BUTTON_2_PIN) == LOW) {
-    digitalWrite(BUZZER_PIN, LOW);
-    digitalWrite(RED_LED_PIN, HIGH);
-    digitalWrite(GREEN_LED_PIN, LOW);
+    // アラーム作動中は上書きしない
+    if (!isAlarmActive) {
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(RED_LED_PIN, HIGH);
+      digitalWrite(GREEN_LED_PIN, LOW);
+    }
 
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
       display.clearDisplay();
@@ -335,12 +341,18 @@ void loop() {
       xSemaphoreGive(lcdMutex);
     }
 
-    if (!sended) sendEspNow("ESP NOW !!");
-    sended = true;
+    // if (!sended) sendEspNow("ESP NOW !!");
+    // sended = true;
   } else {
-    digitalWrite(BUZZER_PIN, LOW);
-    digitalWrite(RED_LED_PIN, HIGH);
-    digitalWrite(GREEN_LED_PIN, HIGH);
+    if (isAlarmActive) {  // アラーム状態の時
+      digitalWrite(BUZZER_PIN, HIGH);
+      digitalWrite(RED_LED_PIN, LOW);
+      digitalWrite(GREEN_LED_PIN, HIGH);
+    } else {              // 通常時は消す
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(RED_LED_PIN, HIGH);
+      digitalWrite(GREEN_LED_PIN, HIGH);
+    }
 
     sended = false;
   }
