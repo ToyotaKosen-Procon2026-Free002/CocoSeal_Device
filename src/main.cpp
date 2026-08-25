@@ -279,6 +279,9 @@ float getBatteryPercent() {
 
 bool sended = false;
 bool isAlarmActive = false;
+int lastBtn1State = HIGH;         // ボタン1の以前の状態
+int sosCount = 0;                 // 連続で押された回数
+unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 
 void loop() {
   if (espNowRecvFlag) {
@@ -316,23 +319,47 @@ void loop() {
     }
   }
 
-  if (digitalRead(BUTTON_1_PIN) == LOW) {
-    isAlarmActive = true;
+  int currentBtn1State = digitalRead(BUTTON_1_PIN);
+  unsigned long currentMillis = millis();   // 現在の時刻を取得
 
-    digitalWrite(BUZZER_PIN, HIGH);
-    digitalWrite(RED_LED_PIN, LOW);
-    digitalWrite(GREEN_LED_PIN, HIGH);
+  if (lastBtn1State == HIGH && currentBtn1State == LOW) {
 
-    if (!sended) LoRaSendTask();
-    sended = true;
-  } else if (digitalRead(BUTTON_2_PIN) == LOW) {
-    // アラーム作動中は上書きしない
-    if (!isAlarmActive) {
-      digitalWrite(BUZZER_PIN, LOW);
-      digitalWrite(RED_LED_PIN, HIGH);
-      digitalWrite(GREEN_LED_PIN, LOW);
+    // 前回のボタン押し下げから3秒(3000ミリ秒)以上たっていたらカウントを0に戻す
+    if (currentMillis - lastPressTime > 3000) {
+      sosCount = 0;
     }
 
+    sosCount++;
+    lastPressTime = currentMillis;
+
+    isAlarmActive = true;
+
+    // 画面表示
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      display.clearDisplay();
+      display.setCursor(0, 0);
+      display.println("SOS");
+
+      display.printf("%d / 3\n", sosCount);   // "1 / 3" のように表示
+      display.display();
+      xSemaphoreGive(lcdMutex);
+    }
+
+    if (sosCount == 3) {
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.setCursor(0, 40);
+        display.println("-> Sending...");
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+
+      sosCount = 0;   // 送信完了したらカウントをリセット
+    }
+  }
+  lastBtn1State = currentBtn1State;
+
+  if (digitalRead(BUTTON_2_PIN) == LOW) {
+    // 現在、ブザーが鳴っていても電池残量は表示される
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
       display.clearDisplay();
       display.setCursor(0, 0);
@@ -341,21 +368,29 @@ void loop() {
       xSemaphoreGive(lcdMutex);
     }
 
+    // 通信関係は調整中
     // if (!sended) sendEspNow("ESP NOW !!");
     // sended = true;
-  } else {
-    if (isAlarmActive) {  // アラーム状態の時
-      digitalWrite(BUZZER_PIN, HIGH);
-      digitalWrite(RED_LED_PIN, LOW);
-      digitalWrite(GREEN_LED_PIN, HIGH);
-    } else {              // 通常時は消す
-      digitalWrite(BUZZER_PIN, LOW);
-      digitalWrite(RED_LED_PIN, HIGH);
-      digitalWrite(GREEN_LED_PIN, HIGH);
-    }
-
-    sended = false;
   }
+
+  int outBuzzer = LOW;
+  int outRedLed = HIGH;
+  int outGreenLed = HIGH;
+
+  // アラーム状態ならブザーと赤LEDをONに上書き
+  if (isAlarmActive) {
+    outBuzzer = HIGH;
+    outRedLed = LOW;
+  }
+
+  // ボタン2が押されていれば緑LEDをONに上書き
+  if (digitalRead(BUTTON_2_PIN) == LOW) {
+    outGreenLed = LOW;
+  }
+
+  digitalWrite(BUZZER_PIN, outBuzzer);
+  digitalWrite(RED_LED_PIN, outRedLed);
+  digitalWrite(GREEN_LED_PIN, outGreenLed);
 
   delay(100);
 }
