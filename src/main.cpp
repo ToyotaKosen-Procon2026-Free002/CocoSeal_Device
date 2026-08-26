@@ -216,7 +216,6 @@ void setup() {
 
   delay(10);
 
-  /*
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_POWER_8_5dBm);
@@ -248,9 +247,6 @@ void setup() {
   esp_now_register_send_cb(onEspNowSent);
   esp_now_register_recv_cb(onEspNowRecv);
 
-  */
-
-  /*
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
   
@@ -267,7 +263,6 @@ void setup() {
   pScan->setWindow(30);
   pScan->setScanCallbacks(new ScanCallbacks(), true);
   pScan->start(0, false, true);
-  */
 }
   
 
