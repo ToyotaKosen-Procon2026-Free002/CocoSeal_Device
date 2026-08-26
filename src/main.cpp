@@ -2,6 +2,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
+#include "DisplayManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <esp_now.h>
 #include <WiFi.h>
@@ -330,38 +331,19 @@ void loop() {
     isAlarmActive = true;
 
     // 画面表示
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println("SOS");
+    displaySOS(sosCount);
 
-      display.printf("%d / 3\n", sosCount);   // "1 / 3" のように表示
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
-
-    if (sosCount == 3) {
-      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-        display.setCursor(0, 40);
-        display.println("-> Sending...");
-        display.display();
-        xSemaphoreGive(lcdMutex);
-      }
-
-      sosCount = 0;   // 送信完了したらカウントをリセット
+    if (sosCount >= 3) {
+      // 3回連続で押された場合、LoRa送信タスクを実行
+      LoRaSendTask();
+      sosCount = 0;  // カウントをリセット
     }
   }
   lastBtn1State = currentBtn1State;
 
   if (digitalRead(BUTTON_2_PIN) == LOW) {
     // 現在、ブザーが鳴っていても電池残量は表示される
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println(getBatteryPercent());
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
+    displayBattery(getBatteryPercent());
 
     // 通信関係は調整中
     // if (!sended) sendEspNow("ESP NOW !!");
