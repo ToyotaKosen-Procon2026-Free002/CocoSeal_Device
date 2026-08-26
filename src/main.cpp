@@ -231,23 +231,7 @@ void loop() {
 
     // SOS発動中でなければ表示する
     if (!isAlarmActive) {
-      // テスト用の表示
-      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-        display.clearDisplay();
-        display.setCursor(0, 0);
-        display.setTextSize(2);
-        
-        if (getSticker) {
-          display.println("Sticker GET!");
-          display.setTextSize(1);
-          display.printf("ID: %s\n", displayStickerId);
-        } else {
-          display.println("Coin GET!");
-        }
-        
-        display.display();
-        xSemaphoreGive(lcdMutex);
-      }
+      displayEncounter(getSticker, isRareSticker, displayStickerId);
 
       // 5秒後に画面をクリアするためのタイマーをセット
       displayClearTime = currentMillis + 5000;

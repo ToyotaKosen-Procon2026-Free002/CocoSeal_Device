@@ -14,6 +14,7 @@ typedef struct struct_message {
 extern bool encounterFlag;
 extern char displayStickerId[16];
 extern bool getSticker;
+extern bool isRareSticker;
 
 // 関数リスト
 void setupEspNow();

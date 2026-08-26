@@ -12,6 +12,7 @@ EncounterHistory recent_history[10];
 bool encounterFlag = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
+bool isRareSticker = false;
 
 struct_message myData;
 struct_message peerData;
@@ -46,11 +47,19 @@ void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         if (peerData.has_sticker) {
             getSticker = true;
             strcpy(displayStickerId, peerData.sticker_id);
-        } else {
-            getSticker = false;
+
+            // 相手のデバイスIDの先頭2文字が "M5" ならレアシールと判定
+            if (strncmp(peerData.device_id, "M5", 2) == 0) {
+                isRareSticker = true;
+                } else {
+                    isRareSticker = false;
+                }
+            } else {
+                getSticker = false;
+                isRareSticker = false;
+            }
+            encounterFlag = true;
         }
-        encounterFlag = true;
-    }
 }
 
 // 起動時の初期設定

@@ -10,3 +10,4 @@ extern SemaphoreHandle_t lcdMutex;
 void displaySOS(int count);
 void displaySending();
 void displayBattery(float percent);
+void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);

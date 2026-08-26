@@ -38,3 +38,25 @@ void displayBattery(float percent) {
         xSemaphoreGive(lcdMutex);
     }
 }
+
+// すれ違い結果の表示
+void displayEncounter(bool gotSticker, bool isRare, const char* stickerId) {
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.setTextSize(2);
+
+        if (gotSticker) {
+            if (isRare) {
+                display.println("RARE GET!!");
+            } else {
+                display.println("Sticker GET!");
+            }
+            display.setTextSize(1);
+            display.printf("ID: %s\n", stickerId);
+        }
+
+        display.display();
+        xSemaphoreGive(lcdMutex);
+    }
+}
