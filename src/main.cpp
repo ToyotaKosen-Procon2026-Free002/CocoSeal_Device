@@ -210,7 +210,7 @@ void setup() {
 float getBatteryPercent() {
   int millivolt = analogReadMilliVolts(BATTERY_PIN);
   float percent = (millivolt - BATTERY_0_VOLT_HALF * 1000) / (BATTERY_100_VOLT_HALF * 1000 - BATTERY_0_VOLT_HALF * 1000);
-  return percent;
+  return percent * 100.0;
 }
 
 bool sended = false;
@@ -222,26 +222,36 @@ unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
+  static unsigned long displayClearTime = 0;
+  static bool needDisplayClear = false;
+
   // すれ違い結果の画面表示
   if (encounterFlag) {
     encounterFlag = false;
 
-    // テスト用の表示
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.setTextSize(2);
-      
-      if (getSticker) {
-        display.println("Sticker GET!");
-        display.setTextSize(1);
-        display.printf("ID: %s\n", displayStickerId);
-      } else {
-        display.println("Coin GET!");
+    // SOS発動中でなければ表示する
+    if (!isAlarmActive) {
+      // テスト用の表示
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.setTextSize(2);
+        
+        if (getSticker) {
+          display.println("Sticker GET!");
+          display.setTextSize(1);
+          display.printf("ID: %s\n", displayStickerId);
+        } else {
+          display.println("Coin GET!");
+        }
+        
+        display.display();
+        xSemaphoreGive(lcdMutex);
       }
-      
-      display.display();
-      xSemaphoreGive(lcdMutex);
+
+      // 5秒後に画面をクリアするためのタイマーをセット
+      displayClearTime = currentMillis + 5000;
+      needDisplayClear = true;
     }
   }
 
@@ -295,9 +305,25 @@ void loop() {
     // 現在、ブザーが鳴っていても電池残量は表示される
     displayBattery(getBatteryPercent());
 
+    // 5秒後に画面をクリアするためのタイマーをセット
+    displayClearTime = currentMillis + 5000;
+    needDisplayClear = true;
+
     // 通信関係は調整中
     // if (!sended) sendEspNow("ESP NOW !!");
     // sended = true;
+  }
+
+  if (needDisplayClear && currentMillis >= displayClearTime) {
+    needDisplayClear = false;
+
+    if (!isAlarmActive) {
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    }
   }
 
   int outBuzzer = LOW;
