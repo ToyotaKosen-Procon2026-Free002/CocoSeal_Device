@@ -3,11 +3,9 @@
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
 #include "DisplayManager.h"
+#include "EspNowManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
-#include <esp_now.h>
-#include <WiFi.h>
 #include <NimBLEDevice.h>
-#include <esp_coexist.h>
 
 #define SERVICE_UUID "42fbd1f2-b02c-1ba6-87f8-7d9ca4f3a343"
 
@@ -41,16 +39,6 @@ SemaphoreHandle_t lcdMutex = NULL;
 CLoRa lora;
 struct LoRaConfigItem_t config;
 struct RecvFrameE220900T22SJP_t data;
-
-volatile bool espNowRecvFlag = false;
-uint8_t lastMac[6];
-char lastData[64];
-int lastDataLen = 0;
-volatile bool espNowSentFlag = false;
-uint8_t lastSentMac[6];
-esp_now_send_status_t lastStatus;
-uint8_t address[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-esp_now_peer_info_t peerInfo;
 
 NimBLEAdvertising *pAdvertising;
 NimBLEScan *pScan;
@@ -117,25 +105,6 @@ void LoRaSendTask() {
     display.display();
     xSemaphoreGive(lcdMutex);
   }
-}
-
-void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  memcpy(lastSentMac, mac_addr, 6);
-  lastStatus = status;
-  espNowSentFlag = true;
-}
-
-void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
-  memcpy(lastMac, mac_addr, 6);
-  int len = data_len < 63 ? data_len : 63;
-  memcpy(lastData, data, len);
-  lastData[len] = '\0';
-  lastDataLen = len;
-  espNowRecvFlag = true;
-}
-
-void sendEspNow(const char *msg) {
-  esp_now_send(address, (uint8_t*)msg, strlen(msg));
 }
 
 void print_reset_reason() {
@@ -217,36 +186,7 @@ void setup() {
 
   delay(10);
 
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-  while (esp_now_init() != ESP_OK) {
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.println("WiFi init retry");
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
-    delay(100);
-  }
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.println("WiFi init success");
-    display.display();
-    xSemaphoreGive(lcdMutex);
-  }
-
-  memcpy(peerInfo.peer_addr, address, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    display.println("Failed to add peer");
-    display.display();
-    return;
-  }
-
-  esp_now_register_send_cb(onEspNowSent);
-  esp_now_register_recv_cb(onEspNowRecv);
+  setupEspNow();
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
@@ -280,43 +220,53 @@ int sosCount = 0;                 // 連続で押された回数
 unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 
 void loop() {
-  if (espNowRecvFlag) {
-    espNowRecvFlag = false;
+  unsigned long currentMillis = millis();   // 現在の時刻を取得
+
+  // すれ違い結果の画面表示
+  if (encounterFlag) {
+    encounterFlag = false;
+
+    // テスト用の表示
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.setCursor(0, 0);
       display.clearDisplay();
-      display.printf("Received data from:\n %02X:%02X:%02X:%02X:%02X:%02X\n", lastMac[0], lastMac[1], lastMac[2], lastMac[3], lastMac[4], lastMac[5]);
-      display.printf("Data:\n %s\n", lastData);
+      display.setCursor(0, 0);
+      display.setTextSize(2);
+      
+      if (getSticker) {
+        display.println("Sticker GET!");
+        display.setTextSize(1);
+        display.printf("ID: %s\n", displayStickerId);
+      } else {
+        display.println("Coin GET!");
+      }
+      
       display.display();
       xSemaphoreGive(lcdMutex);
     }
   }
 
-  if (espNowSentFlag) {
-    espNowSentFlag = false;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.setCursor(0, 0);
-      display.clearDisplay();
-      display.printf("Last Packet Send Status:\n %s\n", lastStatus == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
+  // 定期的に自分のデータを周囲に送信
+  static unsigned long lastSendTime = 0;
+  if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
+    lastSendTime = currentMillis;
+    sendDummySticker();
   }
-  
+
   if (bleFlag) {
     bleFlag = false;
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      /*
       display.setCursor(0,0);
       display.clearDisplay();
       display.printf("BLE Mac:\n %s\n", lastBLEMac.c_str());
       display.printf("RSSI:\n %d dBm\n", lastRSSI);
       display.display();
+      */
       xSemaphoreGive(lcdMutex);
     }
   }
 
   int currentBtn1State = digitalRead(BUTTON_1_PIN);
-  unsigned long currentMillis = millis();   // 現在の時刻を取得
 
   if (lastBtn1State == HIGH && currentBtn1State == LOW) {
 
