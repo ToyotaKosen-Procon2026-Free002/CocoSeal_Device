@@ -302,12 +302,13 @@ void loop() {
   lastBtn1State = currentBtn1State;
 
   if (digitalRead(BUTTON_2_PIN) == LOW) {
-    // 現在、ブザーが鳴っていても電池残量は表示される
-    displayBattery(getBatteryPercent());
+    if (!isAlarmActive) {
+      displayBattery(getBatteryPercent());
 
-    // 5秒後に画面をクリアするためのタイマーをセット
-    displayClearTime = currentMillis + 5000;
-    needDisplayClear = true;
+      // 5秒後に画面をクリアするためのタイマーをセット
+      displayClearTime = currentMillis + 5000;
+      needDisplayClear = true;
+    }
 
     // 通信関係は調整中
     // if (!sended) sendEspNow("ESP NOW !!");
