@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include "DisplayManager.h"
 #include "EspNowManager.h"
+#include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <NimBLEDevice.h>
 
@@ -187,6 +188,7 @@ void setup() {
   delay(10);
 
   setupEspNow();
+  setupWifi();
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
@@ -222,11 +224,11 @@ unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
+  maintainWifiConnection();
+
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
-  static EspNowStatus displayedEspNowStatus = ESP_NOW_WAITING;
-  static bool espNowStatusDisplayed = false;
-  static unsigned long espNowStatusDisplayUntil = 0;
+  static unsigned long wifiStatusDisplayUntil = 0;
 
   // すれ違い結果の画面表示
   if (encounterFlag) {
@@ -235,28 +237,27 @@ void loop() {
     // SOS発動中でなければ表示する
     if (!isAlarmActive) {
       displayEncounter(getSticker, isRareSticker, displayStickerId);
+      clearWifiStatus();
+      wifiStatusDisplayUntil = 0;
 
       // 5秒後に画面をクリアするためのタイマーをセット
       displayClearTime = currentMillis + 5000;
       needDisplayClear = true;
     }
   } else if (!isAlarmActive && !needDisplayClear &&
-             (!espNowStatusDisplayed || displayedEspNowStatus != espNowStatus)) {
-    displayedEspNowStatus = espNowStatus;
-    espNowStatusDisplayed = true;
-    if (    espNowStatus == ESP_NOW_SENDING ||
-    espNowStatus == ESP_NOW_RECEIVED ||
-    espNowStatus == ESP_NOW_SEND_FAILED) {
-      displayEspNowStatus(espNowStatus);
-      espNowStatusDisplayUntil = currentMillis + 1000;
-    } else {
-      displayEspNowStatus(ESP_NOW_WAITING);
-    }
+             getWifiStatus() != WIFI_STATUS_NONE) {
+    displayWifiStatus(getWifiStatus());
+    clearWifiStatus();
+    wifiStatusDisplayUntil = currentMillis + 1000;
   } else if (!isAlarmActive && !needDisplayClear &&
-             espNowStatusDisplayUntil != 0 &&
-             currentMillis >= espNowStatusDisplayUntil) {
-    espNowStatusDisplayUntil = 0;
-    displayEspNowStatus(ESP_NOW_WAITING);
+             wifiStatusDisplayUntil != 0 &&
+             currentMillis >= wifiStatusDisplayUntil) {
+    wifiStatusDisplayUntil = 0;
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      display.clearDisplay();
+      display.display();
+      xSemaphoreGive(lcdMutex);
+    }
   }
 
   // 定期的に自分のデータを周囲に送信
@@ -328,9 +329,6 @@ void loop() {
         display.display();
         xSemaphoreGive(lcdMutex);
       }
-      setEspNowStatus(ESP_NOW_WAITING);
-      espNowStatusDisplayed = false;
-      espNowStatusDisplayUntil = 0;
     }
   }
 

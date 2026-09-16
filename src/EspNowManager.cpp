@@ -9,7 +9,7 @@ typedef struct {
 } EncounterHistory;
 EncounterHistory recent_history[10];
 
-bool encounterFlag = false;
+volatile bool encounterFlag = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
 bool isRareSticker = false;

@@ -33,7 +33,7 @@ extern bool isParentDevice;
 extern volatile EspNowStatus espNowStatus;
 
 // main.cpp用のフラグ関数
-extern bool encounterFlag;
+extern volatile bool encounterFlag;
 extern char displayStickerId[16];
 extern bool getSticker;
 extern bool isRareSticker;
