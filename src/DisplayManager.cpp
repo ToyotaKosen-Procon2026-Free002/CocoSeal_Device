@@ -61,24 +61,20 @@ void displayEncounter(bool gotSticker, bool isRare, const char* stickerId) {
     }
 }
 
-void displayEspNowStatus(EspNowStatus status) {
+void displayWifiStatus(WifiStatus status) {
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
         display.clearDisplay();
         display.setCursor(0, 0);
         display.setTextSize(2);
 
         switch (status) {
-            case ESP_NOW_SENDING:
-                display.println("SENDING...");
+            case WIFI_STATUS_SUCCESS:
+                display.println("WiFi SUCCESS");
                 break;
-            case ESP_NOW_RECEIVED:
-                display.println("RECEIVED");
+            case WIFI_STATUS_FAILED:
+                display.println("WiFi FAILED");
                 break;
-            case ESP_NOW_SEND_FAILED:
-                display.println("SEND FAILED");
-                break;
-            case ESP_NOW_WAITING:
-            case ESP_NOW_ESTABLISHED:
+            case WIFI_STATUS_NONE:
                 break;
         }
 
