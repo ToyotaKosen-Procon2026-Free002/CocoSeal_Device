@@ -10,6 +10,7 @@ typedef struct {
 EncounterHistory recent_history[10];
 
 volatile bool encounterFlag = false;
+volatile bool sosReceivedEspNow = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
 bool isRareSticker = false;
@@ -98,6 +99,10 @@ void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
     }
 
     unsigned long currentMillis = millis();
+    if (peerData.message_type == ESP_NOW_SOS) {
+        sosReceivedEspNow = true;
+        return;
+    }
     if (isInCooldown(mac_addr, currentMillis)) {
         return;
     }
@@ -126,6 +131,8 @@ void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
             if (isPendingPeer(mac_addr, peerData.transaction_id)) {
                 completeExchange(peerData, mac_addr, currentMillis);
             }
+            break;
+        case ESP_NOW_SOS:
             break;
     }
 }
@@ -164,4 +171,9 @@ void sendDummySticker() {
     myData = makeMessage(ESP_NOW_OFFER, pendingTransactionId);
     memcpy(pendingPeerMac, broadcastAddress, 6);
     esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
+}
+
+void sendSosNotification() {
+    struct_message sosMessage = makeMessage(ESP_NOW_SOS, nextTransactionId++);
+    esp_now_send(broadcastAddress, (uint8_t *)&sosMessage, sizeof(sosMessage));
 }

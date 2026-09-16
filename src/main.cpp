@@ -44,8 +44,11 @@ struct RecvFrameE220900T22SJP_t data;
 NimBLEAdvertising *pAdvertising;
 NimBLEScan *pScan;
 volatile bool bleFlag = false;
+volatile bool sosReceivedLoRa = false;
 int lastRSSI;
 std::string lastBLEMac;
+bool isAlarmActive = false;
+int sosCount = 0;
 
 class ScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice *device) override {
@@ -63,7 +66,13 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 void LoRaRecvTask(void *pvParameters) {
   while (1) {
     if (lora.receiveFrame(&data) == 0) {
-      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      if (data.recv_data_len >= 3 &&
+          memcmp(data.recv_data, "SOS", 3) == 0) {
+        sosReceivedLoRa = true;
+      }
+      if (data.recv_data_len < 3 ||
+          memcmp(data.recv_data, "SOS", 3) != 0) {
+        if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
         display.clearDisplay();
         display.setCursor(0, 0);
 
@@ -82,6 +91,7 @@ void LoRaRecvTask(void *pvParameters) {
 
         display.display();
         xSemaphoreGive(lcdMutex);
+        }
       }
     }
 
@@ -106,6 +116,13 @@ void LoRaSendTask() {
     display.display();
     xSemaphoreGive(lcdMutex);
   }
+}
+
+void triggerSos() {
+  isAlarmActive = true;
+  sendSosNotification();
+  LoRaSendTask();
+  displaySOSAlert();
 }
 
 void print_reset_reason() {
@@ -216,15 +233,20 @@ float getBatteryPercent() {
 }
 
 bool sended = false;
-bool isAlarmActive = false;
 int lastBtn1State = HIGH;         // ボタン1の以前の状態
-int sosCount = 0;                 // 連続で押された回数
 unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 
 void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
   maintainWifiConnection();
+
+  if (sosReceivedEspNow || sosReceivedLoRa) {
+    sosReceivedEspNow = false;
+    sosReceivedLoRa = false;
+    isAlarmActive = true;
+    displaySOSAlert();
+  }
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
@@ -293,21 +315,29 @@ void loop() {
     sosCount++;
     lastPressTime = currentMillis;
 
+    // 1回目の押下から警報を開始する
     isAlarmActive = true;
 
     // 画面表示
     displaySOS(sosCount);
 
     if (sosCount >= 3) {
-      // 3回連続で押された場合、LoRa送信タスクを実行
-      LoRaSendTask();
+      triggerSos();
       sosCount = 0;  // カウントをリセット
     }
   }
   lastBtn1State = currentBtn1State;
 
   if (digitalRead(BUTTON_2_PIN) == LOW) {
-    if (!isAlarmActive) {
+    if (isAlarmActive) {
+      isAlarmActive = false;
+      sosCount = 0;
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    } else {
       displayBattery(getBatteryPercent());
 
       // 5秒後に画面をクリアするためのタイマーをセット
