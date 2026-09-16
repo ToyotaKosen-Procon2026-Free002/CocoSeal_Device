@@ -13,6 +13,7 @@ bool encounterFlag = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
 bool isRareSticker = false;
+bool isParentDevice = false;
 
 struct_message myData;
 struct_message peerData;
@@ -48,18 +49,18 @@ void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
             getSticker = true;
             strcpy(displayStickerId, peerData.sticker_id);
 
-            // 相手のデバイスIDの先頭2文字が "M5" ならレアシールと判定
-            if (strncmp(peerData.device_id, "M5", 2) == 0) {
+            // 親機から受け取ったシールならレアシールと判定
+            if (peerData.is_parent) {
                 isRareSticker = true;
-                } else {
-                    isRareSticker = false;
-                }
             } else {
-                getSticker = false;
                 isRareSticker = false;
             }
-            encounterFlag = true;
+        } else {
+            getSticker = false;
+            isRareSticker = false;
         }
+        encounterFlag = true;
+    }
 }
 
 // 起動時の初期設定
@@ -81,6 +82,7 @@ void setupEspNow() {
 // 定期的に周りに呼びかける関数
 void sendDummySticker() {
     strcpy(myData.device_id, "ESP-0001");
+    myData.is_parent = isParentDevice;
     myData.has_sticker = true;
     strcpy(myData.sticker_id, "st_005");
     esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
