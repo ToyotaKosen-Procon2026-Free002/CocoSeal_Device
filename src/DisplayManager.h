@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "EspNowManager.h"
 
 extern Adafruit_SSD1306 display;
 extern SemaphoreHandle_t lcdMutex;
@@ -11,3 +12,4 @@ void displaySOS(int count);
 void displaySending();
 void displayBattery(float percent);
 void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);
+void displayEspNowStatus(EspNowStatus status);

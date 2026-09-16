@@ -60,3 +60,29 @@ void displayEncounter(bool gotSticker, bool isRare, const char* stickerId) {
         xSemaphoreGive(lcdMutex);
     }
 }
+
+void displayEspNowStatus(EspNowStatus status) {
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.setTextSize(2);
+
+        switch (status) {
+            case ESP_NOW_SENDING:
+                display.println("SENDING...");
+                break;
+            case ESP_NOW_RECEIVED:
+                display.println("RECEIVED");
+                break;
+            case ESP_NOW_SEND_FAILED:
+                display.println("SEND FAILED");
+                break;
+            case ESP_NOW_WAITING:
+            case ESP_NOW_ESTABLISHED:
+                break;
+        }
+
+        display.display();
+        xSemaphoreGive(lcdMutex);
+    }
+}

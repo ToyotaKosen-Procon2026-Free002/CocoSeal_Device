@@ -224,6 +224,9 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
+  static EspNowStatus displayedEspNowStatus = ESP_NOW_WAITING;
+  static bool espNowStatusDisplayed = false;
+  static unsigned long espNowStatusDisplayUntil = 0;
 
   // すれ違い結果の画面表示
   if (encounterFlag) {
@@ -237,6 +240,23 @@ void loop() {
       displayClearTime = currentMillis + 5000;
       needDisplayClear = true;
     }
+  } else if (!isAlarmActive && !needDisplayClear &&
+             (!espNowStatusDisplayed || displayedEspNowStatus != espNowStatus)) {
+    displayedEspNowStatus = espNowStatus;
+    espNowStatusDisplayed = true;
+    if (    espNowStatus == ESP_NOW_SENDING ||
+    espNowStatus == ESP_NOW_RECEIVED ||
+    espNowStatus == ESP_NOW_SEND_FAILED) {
+      displayEspNowStatus(espNowStatus);
+      espNowStatusDisplayUntil = currentMillis + 1000;
+    } else {
+      displayEspNowStatus(ESP_NOW_WAITING);
+    }
+  } else if (!isAlarmActive && !needDisplayClear &&
+             espNowStatusDisplayUntil != 0 &&
+             currentMillis >= espNowStatusDisplayUntil) {
+    espNowStatusDisplayUntil = 0;
+    displayEspNowStatus(ESP_NOW_WAITING);
   }
 
   // 定期的に自分のデータを周囲に送信
@@ -308,6 +328,9 @@ void loop() {
         display.display();
         xSemaphoreGive(lcdMutex);
       }
+      setEspNowStatus(ESP_NOW_WAITING);
+      espNowStatusDisplayed = false;
+      espNowStatusDisplayUntil = 0;
     }
   }
 
