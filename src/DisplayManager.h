@@ -10,6 +10,7 @@ extern SemaphoreHandle_t lcdMutex;
 
 // 画面表示用の関数リスト
 void displaySOS(int count);
+void displaySOSAlert();
 void displaySending();
 void displayBattery(float percent);
 void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);

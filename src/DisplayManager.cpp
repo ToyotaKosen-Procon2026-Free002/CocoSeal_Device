@@ -13,6 +13,20 @@ void displaySOS(int count) {
         display.display();
         xSemaphoreGive(lcdMutex);
     }
+
+}
+
+void displaySOSAlert() {
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.setTextSize(2);
+        display.println("SOS ALERT");
+        display.setTextSize(1);
+        display.println("Press reset");
+        display.display();
+        xSemaphoreGive(lcdMutex);
+    }
 }
 
 // 送信中の表示

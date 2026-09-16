@@ -7,7 +7,8 @@ enum EspNowMessageType {
     ESP_NOW_OFFER,
     ESP_NOW_ACCEPT,
     ESP_NOW_COMMIT,
-    ESP_NOW_COMMIT_ACK
+    ESP_NOW_COMMIT_ACK,
+    ESP_NOW_SOS
 };
 
 // すれ違い通信用のデータ型
@@ -34,6 +35,7 @@ extern volatile EspNowStatus espNowStatus;
 
 // main.cpp用のフラグ関数
 extern volatile bool encounterFlag;
+extern volatile bool sosReceivedEspNow;
 extern char displayStickerId[16];
 extern bool getSticker;
 extern bool isRareSticker;
@@ -41,4 +43,5 @@ extern bool isRareSticker;
 // 関数リスト
 void setupEspNow();
 void sendDummySticker();
+void sendSosNotification();
 void setEspNowStatus(EspNowStatus status);
