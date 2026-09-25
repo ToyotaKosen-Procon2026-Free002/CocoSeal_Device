@@ -125,6 +125,15 @@ void triggerSos() {
   displaySOSAlert();
 }
 
+void resetSosAlarm() {
+  isAlarmActive = false;
+  sosCount = 0;
+  sosReceivedEspNow = false;
+  sosReceivedLoRa = false;
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RED_LED_PIN, HIGH);
+}
+
 void print_reset_reason() {
   esp_reset_reason_t reason = esp_reset_reason();
   display.print("Reset Reason: ");
@@ -205,7 +214,7 @@ void setup() {
   delay(10);
 
   setupEspNow();
-  setupWifi();
+  // setupWifi();
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
@@ -239,13 +248,24 @@ unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
-  maintainWifiConnection();
+  // maintainWifiConnection();
 
-  if (sosReceivedEspNow || sosReceivedLoRa) {
+  bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
+  bool wasAlarmActive = isAlarmActive;
+
+  if (!resetPressed && (sosReceivedEspNow || sosReceivedLoRa)) {
     sosReceivedEspNow = false;
     sosReceivedLoRa = false;
     isAlarmActive = true;
     displaySOSAlert();
+  }
+  if (resetPressed) {
+    resetSosAlarm();
+    if (wasAlarmActive && xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      display.clearDisplay();
+      display.display();
+      xSemaphoreGive(lcdMutex);
+    }
   }
 
   static unsigned long displayClearTime = 0;
@@ -305,7 +325,7 @@ void loop() {
 
   int currentBtn1State = digitalRead(BUTTON_1_PIN);
 
-  if (lastBtn1State == HIGH && currentBtn1State == LOW) {
+  if (!resetPressed && lastBtn1State == HIGH && currentBtn1State == LOW) {
 
     // 前回のボタン押し下げから3秒(3000ミリ秒)以上たっていたらカウントを0に戻す
     if (currentMillis - lastPressTime > 3000) {
@@ -328,16 +348,8 @@ void loop() {
   }
   lastBtn1State = currentBtn1State;
 
-  if (digitalRead(BUTTON_2_PIN) == LOW) {
-    if (isAlarmActive) {
-      isAlarmActive = false;
-      sosCount = 0;
-      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-        display.clearDisplay();
-        display.display();
-        xSemaphoreGive(lcdMutex);
-      }
-    } else {
+  if (resetPressed) {
+    if (!wasAlarmActive) {
       displayBattery(getBatteryPercent());
 
       // 5秒後に画面をクリアするためのタイマーをセット
@@ -367,13 +379,13 @@ void loop() {
   int outGreenLed = HIGH;
 
   // アラーム状態ならブザーと赤LEDをONに上書き
-  if (isAlarmActive) {
+  if (isAlarmActive && !resetPressed) {
     outBuzzer = HIGH;
     outRedLed = LOW;
   }
 
   // ボタン2が押されていれば緑LEDをONに上書き
-  if (digitalRead(BUTTON_2_PIN) == LOW) {
+  if (resetPressed) {
     outGreenLed = LOW;
   }
 
