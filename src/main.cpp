@@ -154,13 +154,21 @@ void print_reset_reason() {
 
 
 void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println();
+  Serial.println("Boot: serial ready");
+
   lcdMutex = xSemaphoreCreateMutex();
 
+  Serial.println("Boot: initializing OLED");
   Wire.begin(LCD_SDA_PIN, LCD_SCK_PIN);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
+    Serial.println("Boot error: OLED initialization failed");
     while (true);
   }
+  Serial.println("Boot: OLED initialized");
 
   if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
     display.clearDisplay();
@@ -192,8 +200,10 @@ void setup() {
 
   delay(10);
 
+  Serial.println("Boot: initializing LoRa");
   lora.SetDefaultConfigValue(config);
   while (lora.InitLoRaModule(config)) {
+    Serial.println("Boot: LoRa init retry");
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
       display.println("LoRa init retry");
       display.display();
@@ -201,6 +211,7 @@ void setup() {
     }
     delay(100);
   }
+  Serial.println("Boot: LoRa initialized");
   if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
     display.println("LoRa init success");
     display.display();
@@ -213,8 +224,11 @@ void setup() {
 
   delay(10);
 
+  Serial.println("Boot: initializing ESP-NOW");
   setupEspNow();
-  // setupWifi();
+  Serial.println("Boot: connecting to Wi-Fi");
+  setupWifi();
+  Serial.println("Boot: initializing BLE");
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
@@ -232,6 +246,7 @@ void setup() {
   pScan->setWindow(30);
   pScan->setScanCallbacks(new ScanCallbacks(), true);
   pScan->start(0, false, true);
+  Serial.println("Boot: setup complete");
 }
   
 
@@ -248,7 +263,7 @@ unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
-  // maintainWifiConnection();
+  maintainWifiConnection();
 
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;
@@ -270,8 +285,6 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
-  static unsigned long wifiStatusDisplayUntil = 0;
-
   // すれ違い結果の画面表示
   if (encounterFlag) {
     encounterFlag = false;
@@ -279,26 +292,10 @@ void loop() {
     // SOS発動中でなければ表示する
     if (!isAlarmActive) {
       displayEncounter(getSticker, isRareSticker, displayStickerId);
-      clearWifiStatus();
-      wifiStatusDisplayUntil = 0;
 
       // 5秒後に画面をクリアするためのタイマーをセット
       displayClearTime = currentMillis + 5000;
       needDisplayClear = true;
-    }
-  } else if (!isAlarmActive && !needDisplayClear &&
-             getWifiStatus() != WIFI_STATUS_NONE) {
-    displayWifiStatus(getWifiStatus());
-    clearWifiStatus();
-    wifiStatusDisplayUntil = currentMillis + 1000;
-  } else if (!isAlarmActive && !needDisplayClear &&
-             wifiStatusDisplayUntil != 0 &&
-             currentMillis >= wifiStatusDisplayUntil) {
-    wifiStatusDisplayUntil = 0;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.clearDisplay();
-      display.display();
-      xSemaphoreGive(lcdMutex);
     }
   }
 

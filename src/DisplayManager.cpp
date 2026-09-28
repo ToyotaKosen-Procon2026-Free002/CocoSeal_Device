@@ -74,25 +74,3 @@ void displayEncounter(bool gotSticker, bool isRare, const char* stickerId) {
         xSemaphoreGive(lcdMutex);
     }
 }
-
-void displayWifiStatus(WifiStatus status) {
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-        display.clearDisplay();
-        display.setCursor(0, 0);
-        display.setTextSize(2);
-
-        switch (status) {
-            case WIFI_STATUS_SUCCESS:
-                display.println("WiFi SUCCESS");
-                break;
-            case WIFI_STATUS_FAILED:
-                display.println("WiFi FAILED");
-                break;
-            case WIFI_STATUS_NONE:
-                break;
-        }
-
-        display.display();
-        xSemaphoreGive(lcdMutex);
-    }
-}
