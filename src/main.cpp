@@ -24,8 +24,8 @@
 #define BATTERY_0_VOLT_HALF 3.2 / 2
 #define ANALOG_RESOLUTION 4096
 
-#define LCD_SCK_PIN 5
-#define LCD_SDA_PIN 4
+#define LCD_SCK_PIN 4
+#define LCD_SDA_PIN 5
 
 #define LORA_M0_PIN 7
 #define LORA_M1_PIN 6
@@ -158,7 +158,7 @@ void setup() {
 
   Wire.begin(LCD_SDA_PIN, LCD_SCK_PIN);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
     while (true);
   }
 
