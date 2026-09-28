@@ -3,7 +3,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "EspNowManager.h"
-#include "WifiManager.h"
 
 extern Adafruit_SSD1306 display;
 extern SemaphoreHandle_t lcdMutex;
@@ -14,4 +13,3 @@ void displaySOSAlert();
 void displaySending();
 void displayBattery(float percent);
 void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);
-void displayWifiStatus(WifiStatus status);
