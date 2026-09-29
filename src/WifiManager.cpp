@@ -33,7 +33,7 @@ bool setupWifi(unsigned long timeoutMs) {
 
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
-    WiFi.setAutoReconnect(true);
+    WiFi.setAutoReconnect(false);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     lastConnectionAttempt = millis();
 
@@ -52,6 +52,8 @@ bool setupWifi(unsigned long timeoutMs) {
     }
 
     Serial.printf("Wi-Fi connection failed, status: %d\n", WiFi.status());
+    WiFi.disconnect(false, false);
+    delay(100);
     setEspNowFallbackChannel();
     return false;
 }
@@ -72,7 +74,6 @@ void maintainWifiConnection(unsigned long retryIntervalMs) {
     }
 
     Serial.println("Wi-Fi disconnected; retrying connection");
-    setEspNowFallbackChannel();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
@@ -85,4 +86,13 @@ String getWifiIpAddress() {
         return String();
     }
     return WiFi.localIP().toString();
+}
+
+uint8_t getCurrentRadioChannel() {
+    uint8_t primaryChannel = 0;
+    wifi_second_chan_t secondaryChannel = WIFI_SECOND_CHAN_NONE;
+    if (esp_wifi_get_channel(&primaryChannel, &secondaryChannel) != ESP_OK) {
+        return 0;
+    }
+    return primaryChannel;
 }

@@ -33,6 +33,7 @@
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+#define COMMUNICATION_TEST_DISPLAY
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 SemaphoreHandle_t lcdMutex = NULL;
@@ -155,7 +156,10 @@ void print_reset_reason() {
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  unsigned long serialStartTime = millis();
+  while (!Serial && millis() - serialStartTime < 5000) {
+    delay(10);
+  }
   Serial.println();
   Serial.println("Boot: serial ready");
 
@@ -164,11 +168,20 @@ void setup() {
   Serial.println("Boot: initializing OLED");
   Wire.begin(LCD_SDA_PIN, LCD_SCK_PIN);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3D)) {
+  uint8_t oledAddress = 0;
+  const uint8_t oledAddresses[] = {0x3C, 0x3D};
+  for (uint8_t address : oledAddresses) {
+    if (display.begin(SSD1306_SWITCHCAPVCC, address)) {
+      oledAddress = address;
+      break;
+    }
+  }
+
+  if (oledAddress == 0) {
     Serial.println("Boot error: OLED initialization failed");
     while (true);
   }
-  Serial.println("Boot: OLED initialized");
+  Serial.printf("Boot: OLED initialized at 0x%02X\n", oledAddress);
 
   if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
     display.clearDisplay();
@@ -228,6 +241,11 @@ void setup() {
   setupEspNow();
   Serial.println("Boot: connecting to Wi-Fi");
   setupWifi();
+  if (isWifiConnected() && WiFi.channel() != 1) {
+    Serial.printf(
+        "Warning: router channel %u differs from parent ESP-NOW channel 1\n",
+        WiFi.channel());
+  }
   Serial.println("Boot: initializing BLE");
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
@@ -285,6 +303,9 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
+#ifdef COMMUNICATION_TEST_DISPLAY
+  static unsigned long lastCommunicationDisplayTime = 0;
+#endif
   // すれ違い結果の画面表示
   if (encounterFlag) {
     encounterFlag = false;
@@ -389,6 +410,22 @@ void loop() {
   digitalWrite(BUZZER_PIN, outBuzzer);
   digitalWrite(RED_LED_PIN, outRedLed);
   digitalWrite(GREEN_LED_PIN, outGreenLed);
+
+#ifdef COMMUNICATION_TEST_DISPLAY
+  if (currentMillis - lastCommunicationDisplayTime >= 500) {
+    lastCommunicationDisplayTime = currentMillis;
+    displayCommunicationTestStatus(
+        isWifiConnected(),
+        getCurrentRadioChannel(),
+        1,
+        espNowTxSuccessCount,
+        espNowTxFailureCount,
+        espNowRxCount,
+        espNowInvalidRxCount,
+        espNowLastRxType,
+        espNowLastRxIsGateway);
+  }
+#endif
 
   delay(100);
 }
