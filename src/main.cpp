@@ -2,11 +2,11 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
+#include "DisplayManager.h"
+#include "EspNowManager.h"
+#include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
-#include <esp_now.h>
-#include <WiFi.h>
 #include <NimBLEDevice.h>
-#include <esp_coexist.h>
 
 #define SERVICE_UUID "42fbd1f2-b02c-1ba6-87f8-7d9ca4f3a343"
 
@@ -19,13 +19,11 @@
 #define BUZZER_PIN 3
 
 #define BATTERY_PIN 0
-#define VCC 3.3
 #define BATTERY_100_VOLT_HALF 4.2 / 2
 #define BATTERY_0_VOLT_HALF 3.2 / 2
-#define ANALOG_RESOLUTION 4096
 
-#define LCD_SCK_PIN 5
-#define LCD_SDA_PIN 4
+#define LCD_SCK_PIN 4
+#define LCD_SDA_PIN 5
 
 #define LORA_M0_PIN 7
 #define LORA_M1_PIN 6
@@ -41,21 +39,14 @@ CLoRa lora;
 struct LoRaConfigItem_t config;
 struct RecvFrameE220900T22SJP_t data;
 
-volatile bool espNowRecvFlag = false;
-uint8_t lastMac[6];
-char lastData[64];
-int lastDataLen = 0;
-volatile bool espNowSentFlag = false;
-uint8_t lastSentMac[6];
-esp_now_send_status_t lastStatus;
-uint8_t address[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-esp_now_peer_info_t peerInfo;
-
 NimBLEAdvertising *pAdvertising;
 NimBLEScan *pScan;
 volatile bool bleFlag = false;
+volatile bool sosReceivedLoRa = false;
 int lastRSSI;
 std::string lastBLEMac;
+bool isAlarmActive = false;
+int sosCount = 0;
 
 class ScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice *device) override {
@@ -73,7 +64,13 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 void LoRaRecvTask(void *pvParameters) {
   while (1) {
     if (lora.receiveFrame(&data) == 0) {
-      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      if (data.recv_data_len >= 3 &&
+          memcmp(data.recv_data, "SOS", 3) == 0) {
+        sosReceivedLoRa = true;
+      }
+      if (data.recv_data_len < 3 ||
+          memcmp(data.recv_data, "SOS", 3) != 0) {
+        if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
         display.clearDisplay();
         display.setCursor(0, 0);
 
@@ -92,6 +89,7 @@ void LoRaRecvTask(void *pvParameters) {
 
         display.display();
         xSemaphoreGive(lcdMutex);
+        }
       }
     }
 
@@ -118,66 +116,47 @@ void LoRaSendTask() {
   }
 }
 
-void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  memcpy(lastSentMac, mac_addr, 6);
-  lastStatus = status;
-  espNowSentFlag = true;
+void triggerSos() {
+  isAlarmActive = true;
+  sendSosNotification();
+  LoRaSendTask();
+  displaySOSAlert();
 }
 
-void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
-  memcpy(lastMac, mac_addr, 6);
-  int len = data_len < 63 ? data_len : 63;
-  memcpy(lastData, data, len);
-  lastData[len] = '\0';
-  lastDataLen = len;
-  espNowRecvFlag = true;
+void resetSosAlarm() {
+  isAlarmActive = false;
+  sosCount = 0;
+  sosReceivedEspNow = false;
+  sosReceivedLoRa = false;
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RED_LED_PIN, HIGH);
 }
-
-void sendEspNow(const char *msg) {
-  esp_now_send(address, (uint8_t*)msg, strlen(msg));
-}
-
-void print_reset_reason() {
-  esp_reset_reason_t reason = esp_reset_reason();
-  display.print("Reset Reason: ");
-
-  switch (reason) {
-    case ESP_RST_POWERON: display.println("POWERON"); break;
-    case ESP_RST_BROWNOUT: display.println("BROWNOUT"); break;
-    case ESP_RST_SW: display.println("SW"); break;
-    case ESP_RST_PANIC: display.println("PANIC"); break;
-    case ESP_RST_INT_WDT: display.println("INT_WDT"); break;
-    case ESP_RST_TASK_WDT: display.println("TASK_WDT"); break;
-    case ESP_RST_DEEPSLEEP: display.println("DEEPSLEEP"); break;
-    case ESP_RST_EXT: display.println("EXT"); break;
-    default: display.println("UNKNOWN"); break;
-  }
-  display.display();
-}
-
 
 void setup() {
+  Serial.begin(115200);
+
   lcdMutex = xSemaphoreCreateMutex();
 
+  Serial.println("Boot: initializing OLED");
   Wire.begin(LCD_SDA_PIN, LCD_SCK_PIN);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+  uint8_t oledAddress = 0;
+  const uint8_t oledAddresses[] = {0x3C, 0x3D};
+  for (uint8_t address : oledAddresses) {
+    if (display.begin(SSD1306_SWITCHCAPVCC, address)) {
+      oledAddress = address;
+      break;
+    }
+  }
+
+  if (oledAddress == 0) {
+    Serial.println("Boot error: OLED initialization failed");
     while (true);
   }
-
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("Hello World");
-
-    display.display();
-
-    print_reset_reason();
-
-    xSemaphoreGive(lcdMutex);
-  }
+  Serial.printf("Boot: OLED initialized at 0x%02X\n", oledAddress);
+  initializeJapaneseDisplay();
+  display.clearDisplay();
+  display.display();
 
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
@@ -195,20 +174,13 @@ void setup() {
 
   delay(10);
 
+  Serial.println("Boot: initializing LoRa");
   lora.SetDefaultConfigValue(config);
   while (lora.InitLoRaModule(config)) {
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.println("LoRa init retry");
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
+    Serial.println("Boot: LoRa init retry");
     delay(100);
   }
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.println("LoRa init success");
-    display.display();
-    xSemaphoreGive(lcdMutex);
-  }
+  Serial.println("Boot: LoRa initialized");
 
   lora.SwitchToNormalMode();
 
@@ -216,41 +188,17 @@ void setup() {
 
   delay(10);
 
-  /*
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
-  while (esp_now_init() != ESP_OK) {
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.println("WiFi init retry");
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
-    delay(100);
+  Serial.println("Boot: initializing ESP-NOW");
+  setupEspNow();
+  Serial.println("Boot: connecting to Wi-Fi");
+  setupWifi();
+  if (isWifiConnected() && WiFi.channel() != 1) {
+    Serial.printf(
+        "Warning: router channel %u differs from parent ESP-NOW channel 1\n",
+        WiFi.channel());
   }
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.println("WiFi init success");
-    display.display();
-    xSemaphoreGive(lcdMutex);
-  }
+  Serial.println("Boot: initializing BLE");
 
-  memcpy(peerInfo.peer_addr, address, 6);
-  peerInfo.channel = 0;
-  peerInfo.encrypt = false;
-
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    display.println("Failed to add peer");
-    display.display();
-    return;
-  }
-
-  esp_now_register_send_cb(onEspNowSent);
-  esp_now_register_recv_cb(onEspNowRecv);
-
-  */
-
-  /*
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
   
@@ -267,95 +215,136 @@ void setup() {
   pScan->setWindow(30);
   pScan->setScanCallbacks(new ScanCallbacks(), true);
   pScan->start(0, false, true);
-  */
+  Serial.println("Boot: setup complete");
 }
   
 
 float getBatteryPercent() {
   int millivolt = analogReadMilliVolts(BATTERY_PIN);
   float percent = (millivolt - BATTERY_0_VOLT_HALF * 1000) / (BATTERY_100_VOLT_HALF * 1000 - BATTERY_0_VOLT_HALF * 1000);
-  return percent;
+  return percent * 100.0;
 }
 
-bool sended = false;
-bool isAlarmActive = false;
+int lastBtn1State = HIGH;         // ボタン1の以前の状態
+unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 
 void loop() {
-  if (espNowRecvFlag) {
-    espNowRecvFlag = false;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.setCursor(0, 0);
+  unsigned long currentMillis = millis();   // 現在の時刻を取得
+
+  maintainWifiConnection();
+
+  bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
+  bool wasAlarmActive = isAlarmActive;
+
+  if (!resetPressed && (sosReceivedEspNow || sosReceivedLoRa)) {
+    sosReceivedEspNow = false;
+    sosReceivedLoRa = false;
+    isAlarmActive = true;
+    displaySOSReceived();
+  }
+  if (resetPressed) {
+    resetSosAlarm();
+    if (wasAlarmActive && xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
       display.clearDisplay();
-      display.printf("Received data from:\n %02X:%02X:%02X:%02X:%02X:%02X\n", lastMac[0], lastMac[1], lastMac[2], lastMac[3], lastMac[4], lastMac[5]);
-      display.printf("Data:\n %s\n", lastData);
       display.display();
       xSemaphoreGive(lcdMutex);
     }
   }
 
-  if (espNowSentFlag) {
-    espNowSentFlag = false;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.setCursor(0, 0);
-      display.clearDisplay();
-      display.printf("Last Packet Send Status:\n %s\n", lastStatus == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
-      display.display();
-      xSemaphoreGive(lcdMutex);
+  static unsigned long displayClearTime = 0;
+  static bool needDisplayClear = false;
+  // すれ違い結果の画面表示
+  if (encounterFlag) {
+    encounterFlag = false;
+
+    // SOS発動中でなければ表示する
+    if (!isAlarmActive) {
+      displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
+                                              : ENCOUNTER_SOURCE_CHILD,
+                       displayStickerId);
+
+      // 5秒後に画面をクリアするためのタイマーをセット
+      displayClearTime = currentMillis + 5000;
+      needDisplayClear = true;
     }
   }
-  
+
+  // 定期的に自分のデータを周囲に送信
+  static unsigned long lastSendTime = 0;
+  if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
+    lastSendTime = currentMillis;
+    sendDummySticker();
+  }
+
   if (bleFlag) {
     bleFlag = false;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.setCursor(0,0);
-      display.clearDisplay();
-      display.printf("BLE Mac:\n %s\n", lastBLEMac.c_str());
-      display.printf("RSSI:\n %d dBm\n", lastRSSI);
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
   }
 
-  if (digitalRead(BUTTON_1_PIN) == LOW) {
+  int currentBtn1State = digitalRead(BUTTON_1_PIN);
+
+  if (!resetPressed && lastBtn1State == HIGH && currentBtn1State == LOW) {
+
+    // 前回のボタン押し下げから3秒(3000ミリ秒)以上たっていたらカウントを0に戻す
+    if (currentMillis - lastPressTime > 3000) {
+      sosCount = 0;
+    }
+
+    sosCount++;
+    lastPressTime = currentMillis;
+
+    // 1回目の押下から警報を開始する
     isAlarmActive = true;
 
-    digitalWrite(BUZZER_PIN, HIGH);
-    digitalWrite(RED_LED_PIN, LOW);
-    digitalWrite(GREEN_LED_PIN, HIGH);
+    // 画面表示
+    displaySOSPressCount(sosCount);
 
-    if (!sended) LoRaSendTask();
-    sended = true;
-  } else if (digitalRead(BUTTON_2_PIN) == LOW) {
-    // アラーム作動中は上書きしない
-    if (!isAlarmActive) {
-      digitalWrite(BUZZER_PIN, LOW);
-      digitalWrite(RED_LED_PIN, HIGH);
-      digitalWrite(GREEN_LED_PIN, LOW);
+    if (sosCount >= 3) {
+      triggerSos();
+      sosCount = 0;  // カウントをリセット
     }
-
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println(getBatteryPercent());
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
-
-    // if (!sended) sendEspNow("ESP NOW !!");
-    // sended = true;
-  } else {
-    if (isAlarmActive) {  // アラーム状態の時
-      digitalWrite(BUZZER_PIN, HIGH);
-      digitalWrite(RED_LED_PIN, LOW);
-      digitalWrite(GREEN_LED_PIN, HIGH);
-    } else {              // 通常時は消す
-      digitalWrite(BUZZER_PIN, LOW);
-      digitalWrite(RED_LED_PIN, HIGH);
-      digitalWrite(GREEN_LED_PIN, HIGH);
-    }
-
-    sended = false;
   }
+  lastBtn1State = currentBtn1State;
+
+  if (resetPressed) {
+    if (!wasAlarmActive) {
+      displayBattery(getBatteryPercent());
+
+      // 5秒後に画面をクリアするためのタイマーをセット
+      displayClearTime = currentMillis + 5000;
+      needDisplayClear = true;
+    }
+  }
+
+  if (needDisplayClear && currentMillis >= displayClearTime) {
+    needDisplayClear = false;
+
+    if (!isAlarmActive) {
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    }
+  }
+
+  int outBuzzer = LOW;
+  int outRedLed = HIGH;
+  int outGreenLed = HIGH;
+
+  // アラーム状態ならブザーと赤LEDをONに上書き
+  if (isAlarmActive && !resetPressed) {
+    outBuzzer = HIGH;
+    outRedLed = LOW;
+  }
+
+  // ボタン2が押されていれば緑LEDをONに上書き
+  if (resetPressed) {
+    outGreenLed = LOW;
+  }
+
+  digitalWrite(BUZZER_PIN, outBuzzer);
+  digitalWrite(RED_LED_PIN, outRedLed);
+  digitalWrite(GREEN_LED_PIN, outGreenLed);
 
   delay(100);
 }
