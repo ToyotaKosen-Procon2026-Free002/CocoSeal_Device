@@ -19,9 +19,20 @@ void drawJapaneseLines(const char* const* lines, size_t lineCount) {
     }
 
     beginJapaneseScreen();
-    int lineStep = lineCount > 1 ? 48 / static_cast<int>(lineCount - 1) : 0;
+    int lineStep = 0;
+    int firstLineY = 10;
+    if (lineCount == 2) {
+        lineStep = 24;
+        firstLineY = 20;
+    } else if (lineCount == 3) {
+        lineStep = 18;
+        firstLineY = 16;
+    } else if (lineCount > 3) {
+        lineStep = 48 / static_cast<int>(lineCount - 1);
+    }
+
     for (size_t i = 0; i < lineCount; ++i) {
-        u8g2.setCursor(0, 10 + static_cast<int>(i) * lineStep);
+        u8g2.setCursor(0, firstLineY + static_cast<int>(i) * lineStep);
         u8g2.print(lines[i]);
     }
     display.display();
@@ -68,13 +79,25 @@ void displaySOSReceived() {
 
 // バッテリー残量の表示
 void displayBattery(float percent) {
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-        display.clearDisplay();
-        display.setCursor(0, 0);
-        display.setTextSize(1);
-        display.printf("Battery: %.1f%%\n", percent);
-        display.display();
-        xSemaphoreGive(lcdMutex);
+    int roundedPercent = static_cast<int>(percent + 0.5f);
+    roundedPercent = constrain(roundedPercent, 0, 100);
+
+    char percentageLine[12];
+    snprintf(percentageLine, sizeof(percentageLine), "%d%%", roundedPercent);
+
+    if (roundedPercent <= 30) {
+        const char* lines[] = {
+            "バッテリーのこり",
+            percentageLine,
+            "おうちでじゅうでんしてね"
+        };
+        drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
+    } else {
+        const char* lines[] = {
+            "バッテリーのこり",
+            percentageLine
+        };
+        drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }
 }
 
