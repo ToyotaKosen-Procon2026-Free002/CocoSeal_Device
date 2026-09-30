@@ -87,12 +87,3 @@ String getWifiIpAddress() {
     }
     return WiFi.localIP().toString();
 }
-
-uint8_t getCurrentRadioChannel() {
-    uint8_t primaryChannel = 0;
-    wifi_second_chan_t secondaryChannel = WIFI_SECOND_CHAN_NONE;
-    if (esp_wifi_get_channel(&primaryChannel, &secondaryChannel) != ESP_OK) {
-        return 0;
-    }
-    return primaryChannel;
-}
