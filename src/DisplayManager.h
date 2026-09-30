@@ -7,12 +7,19 @@
 extern Adafruit_SSD1306 display;
 extern SemaphoreHandle_t lcdMutex;
 
+enum EncounterSource {
+    ENCOUNTER_SOURCE_CHILD,
+    ENCOUNTER_SOURCE_PARENT
+};
+
 // 画面表示用の関数リスト
-void displaySOS(int count);
+void initializeJapaneseDisplay();
+void displaySOSPressCount(int count);
 void displaySOSAlert();
+void displaySOSReceived();
 void displaySending();
 void displayBattery(float percent);
-void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);
+void displayEncounter(EncounterSource source, const char* stickerId);
 void displayCommunicationTestStatus(bool wifiConnected,
                                     uint8_t radioChannel,
                                     uint8_t espNowChannel,

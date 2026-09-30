@@ -120,6 +120,7 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     getSticker = packet.stickerId[0] != '\0';
     snprintf(displayStickerId, sizeof(displayStickerId), "%s",
              packet.stickerId);
+    lastEncounterWasParent = packet.isGateway;
     // The parent packet does not contain a rarity field.
     isRareSticker = false;
     setEspNowStatus(ESP_NOW_ESTABLISHED);
@@ -148,6 +149,7 @@ volatile bool sosReceivedEspNow = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
 bool isRareSticker = false;
+volatile bool lastEncounterWasParent = false;
 volatile EspNowStatus espNowStatus = ESP_NOW_WAITING;
 volatile uint32_t espNowTxSuccessCount = 0;
 volatile uint32_t espNowTxFailureCount = 0;

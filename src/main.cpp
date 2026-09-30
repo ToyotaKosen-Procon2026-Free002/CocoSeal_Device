@@ -33,7 +33,7 @@
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define COMMUNICATION_TEST_DISPLAY
+// #define COMMUNICATION_TEST_DISPLAY
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 SemaphoreHandle_t lcdMutex = NULL;
@@ -135,25 +135,6 @@ void resetSosAlarm() {
   digitalWrite(RED_LED_PIN, HIGH);
 }
 
-void print_reset_reason() {
-  esp_reset_reason_t reason = esp_reset_reason();
-  display.print("Reset Reason: ");
-
-  switch (reason) {
-    case ESP_RST_POWERON: display.println("POWERON"); break;
-    case ESP_RST_BROWNOUT: display.println("BROWNOUT"); break;
-    case ESP_RST_SW: display.println("SW"); break;
-    case ESP_RST_PANIC: display.println("PANIC"); break;
-    case ESP_RST_INT_WDT: display.println("INT_WDT"); break;
-    case ESP_RST_TASK_WDT: display.println("TASK_WDT"); break;
-    case ESP_RST_DEEPSLEEP: display.println("DEEPSLEEP"); break;
-    case ESP_RST_EXT: display.println("EXT"); break;
-    default: display.println("UNKNOWN"); break;
-  }
-  display.display();
-}
-
-
 void setup() {
   Serial.begin(115200);
   unsigned long serialStartTime = millis();
@@ -182,20 +163,9 @@ void setup() {
     while (true);
   }
   Serial.printf("Boot: OLED initialized at 0x%02X\n", oledAddress);
-
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("Hello World");
-
-    display.display();
-
-    print_reset_reason();
-
-    xSemaphoreGive(lcdMutex);
-  }
+  initializeJapaneseDisplay();
+  display.clearDisplay();
+  display.display();
 
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
@@ -217,19 +187,9 @@ void setup() {
   lora.SetDefaultConfigValue(config);
   while (lora.InitLoRaModule(config)) {
     Serial.println("Boot: LoRa init retry");
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      display.println("LoRa init retry");
-      display.display();
-      xSemaphoreGive(lcdMutex);
-    }
     delay(100);
   }
   Serial.println("Boot: LoRa initialized");
-  if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-    display.println("LoRa init success");
-    display.display();
-    xSemaphoreGive(lcdMutex);
-  }
 
   lora.SwitchToNormalMode();
 
@@ -290,7 +250,7 @@ void loop() {
     sosReceivedEspNow = false;
     sosReceivedLoRa = false;
     isAlarmActive = true;
-    displaySOSAlert();
+    displaySOSReceived();
   }
   if (resetPressed) {
     resetSosAlarm();
@@ -312,7 +272,9 @@ void loop() {
 
     // SOS発動中でなければ表示する
     if (!isAlarmActive) {
-      displayEncounter(getSticker, isRareSticker, displayStickerId);
+      displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
+                                              : ENCOUNTER_SOURCE_CHILD,
+                       displayStickerId);
 
       // 5秒後に画面をクリアするためのタイマーをセット
       displayClearTime = currentMillis + 5000;
@@ -357,7 +319,7 @@ void loop() {
     isAlarmActive = true;
 
     // 画面表示
-    displaySOS(sosCount);
+    displaySOSPressCount(sosCount);
 
     if (sosCount >= 3) {
       triggerSos();
