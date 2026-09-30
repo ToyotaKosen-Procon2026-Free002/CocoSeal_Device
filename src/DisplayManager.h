@@ -3,15 +3,19 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "EspNowManager.h"
-#include "WifiManager.h"
 
 extern Adafruit_SSD1306 display;
 extern SemaphoreHandle_t lcdMutex;
 
+enum EncounterSource {
+    ENCOUNTER_SOURCE_CHILD,
+    ENCOUNTER_SOURCE_PARENT
+};
+
 // 画面表示用の関数リスト
-void displaySOS(int count);
+void initializeJapaneseDisplay();
+void displaySOSPressCount(int count);
 void displaySOSAlert();
-void displaySending();
+void displaySOSReceived();
 void displayBattery(float percent);
-void displayEncounter(bool gotSticker, bool isRare, const char* stickerId);
-void displayWifiStatus(WifiStatus status);
+void displayEncounter(EncounterSource source, const char* stickerId);

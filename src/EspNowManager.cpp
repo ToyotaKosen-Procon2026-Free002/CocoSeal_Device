@@ -1,179 +1,189 @@
 #include "EspNowManager.h"
 
-#define COOL_DOWN_TIME 30000 // クールタイム30秒
+#define COOL_DOWN_TIME 30000
+#define ENCOUNTER_HISTORY_SIZE 10
+#define ESP_NOW_CHANNEL 1
+#define MESSAGE_TYPE_ENCOUNTER 0
+#define MESSAGE_TYPE_SOS 1
 
-// すれ違い履歴の構造体
-typedef struct {
+namespace {
+struct EncounterHistory {
     uint8_t macAddr[6];
     unsigned long lastTradeTime;
-} EncounterHistory;
-EncounterHistory recent_history[10];
+    bool occupied;
+};
+
+EncounterHistory recentHistory[ENCOUNTER_HISTORY_SIZE] = {};
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+bool isInCooldown(const uint8_t *macAddr, unsigned long now) {
+    for (const EncounterHistory& history : recentHistory) {
+        if (history.occupied &&
+            memcmp(history.macAddr, macAddr, sizeof(history.macAddr)) == 0 &&
+            now - history.lastTradeTime < COOL_DOWN_TIME) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void recordEncounter(const uint8_t *macAddr, unsigned long now) {
+    EncounterHistory *slot = nullptr;
+    for (EncounterHistory& history : recentHistory) {
+        if (history.occupied &&
+            memcmp(history.macAddr, macAddr, sizeof(history.macAddr)) == 0) {
+            slot = &history;
+            break;
+        }
+        if (!history.occupied) {
+            slot = &history;
+        }
+    }
+
+    if (slot == nullptr) {
+        slot = &recentHistory[0];
+        for (EncounterHistory& history : recentHistory) {
+            if (now - history.lastTradeTime >
+                now - slot->lastTradeTime) {
+                slot = &history;
+            }
+        }
+    }
+
+    memcpy(slot->macAddr, macAddr, sizeof(slot->macAddr));
+    slot->lastTradeTime = now;
+    slot->occupied = true;
+}
+
+CommunicationPacket makePacket(int type) {
+    CommunicationPacket packet = {};
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(packet.device_id, sizeof(packet.device_id),
+             "ESP-%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    packet.type = type;
+    snprintf(packet.stickerId, sizeof(packet.stickerId), "%s", "st_005");
+    packet.isGateway = false;
+    return packet;
+}
+
+bool sendPacket(const CommunicationPacket& packet) {
+    esp_err_t result = esp_now_send(
+        broadcastAddress,
+        reinterpret_cast<const uint8_t *>(&packet),
+        sizeof(packet));
+    if (result != ESP_OK) {
+        Serial.printf("ESP-NOW send failed: %d\n", result);
+        setEspNowStatus(ESP_NOW_SEND_FAILED);
+        return false;
+    }
+    return true;
+}
+
+void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
+    if (dataLen != sizeof(CommunicationPacket)) {
+        Serial.printf("Ignoring incompatible ESP-NOW packet: %d bytes\n",
+                      dataLen);
+        return;
+    }
+
+    CommunicationPacket packet = {};
+    memcpy(&packet, data, sizeof(packet));
+    packet.device_id[sizeof(packet.device_id) - 1] = '\0';
+    packet.stickerId[sizeof(packet.stickerId) - 1] = '\0';
+
+    if (packet.type == MESSAGE_TYPE_SOS) {
+        if (!packet.isGateway) {
+            Serial.printf("SOS received from %s\n", packet.device_id);
+            sosReceivedEspNow = true;
+        }
+        return;
+    }
+
+    if (packet.type != MESSAGE_TYPE_ENCOUNTER) {
+        Serial.printf("Ignoring unknown ESP-NOW message type: %d\n",
+                      packet.type);
+        return;
+    }
+
+    unsigned long now = millis();
+    if (isInCooldown(macAddr, now)) {
+        return;
+    }
+    recordEncounter(macAddr, now);
+
+    getSticker = packet.stickerId[0] != '\0';
+    snprintf(displayStickerId, sizeof(displayStickerId), "%s",
+             packet.stickerId);
+    lastEncounterWasParent = packet.isGateway;
+    // The parent packet does not contain a rarity field.
+    isRareSticker = false;
+    setEspNowStatus(ESP_NOW_ESTABLISHED);
+    encounterFlag = true;
+
+    Serial.printf("Encounter from %s (%s), sticker: %s\n",
+                  packet.device_id,
+                  packet.isGateway ? "gateway" : "child",
+                  packet.stickerId);
+}
+
+void onEspNowSent(const uint8_t *, esp_now_send_status_t status) {
+    setEspNowStatus(status == ESP_NOW_SEND_SUCCESS
+                        ? ESP_NOW_SENDING
+                        : ESP_NOW_SEND_FAILED);
+}
+}
 
 volatile bool encounterFlag = false;
 volatile bool sosReceivedEspNow = false;
 char displayStickerId[16] = "";
 bool getSticker = false;
 bool isRareSticker = false;
-bool isParentDevice = false;
+volatile bool lastEncounterWasParent = false;
 volatile EspNowStatus espNowStatus = ESP_NOW_WAITING;
-
-struct_message myData;
-struct_message peerData;
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-esp_now_peer_info_t peerInfo;
-uint32_t nextTransactionId = 1;
-uint32_t pendingTransactionId = 0;
-uint8_t pendingPeerMac[6] = {};
-
-bool isInCooldown(const uint8_t *mac_addr, unsigned long currentMillis) {
-    for (int i = 0; i < 10; i++) {
-        if (memcmp(recent_history[i].macAddr, mac_addr, 6) == 0) {
-            return currentMillis - recent_history[i].lastTradeTime < COOL_DOWN_TIME;
-        }
-    }
-    return false;
-}
-
-void completeExchange(const struct_message& receivedData,
-                      const uint8_t *mac_addr,
-                      unsigned long currentMillis) {
-    if (isInCooldown(mac_addr, currentMillis)) {
-        return;
-    }
-
-    memcpy(recent_history[0].macAddr, mac_addr, 6);
-    recent_history[0].lastTradeTime = currentMillis;
-
-    if (receivedData.has_sticker) {
-        getSticker = true;
-        strcpy(displayStickerId, receivedData.sticker_id);
-        isRareSticker = receivedData.is_parent;
-    } else {
-        getSticker = false;
-        isRareSticker = false;
-    }
-
-    setEspNowStatus(ESP_NOW_ESTABLISHED);
-    encounterFlag = true;
-}
-
-bool isPendingPeer(const uint8_t *mac_addr, uint32_t transactionId) {
-    bool isBroadcastPeer = memcmp(pendingPeerMac, broadcastAddress, 6) == 0;
-    return pendingTransactionId == transactionId &&
-           (isBroadcastPeer || memcmp(pendingPeerMac, mac_addr, 6) == 0);
-}
-
-bool sendMessage(const struct_message& message, const uint8_t *mac_addr) {
-    return esp_now_send(mac_addr, (uint8_t *)&message, sizeof(message)) == ESP_OK;
-}
-
-struct_message makeMessage(EspNowMessageType messageType, uint32_t transactionId) {
-    struct_message message = {};
-    strcpy(message.device_id, "ESP-0001");
-    message.is_parent = isParentDevice;
-    message.has_sticker = true;
-    strcpy(message.sticker_id, "st_005");
-    message.transaction_id = transactionId;
-    message.message_type = messageType;
-    return message;
-}
-
-// データを受信したときの処理
-void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
-    if (data_len != sizeof(struct_message)) {
-        return; // データサイズが異なる場合は無視
-    }
-
-    memcpy(&peerData, data, sizeof(peerData));
-    setEspNowStatus(ESP_NOW_RECEIVED);
-
-    // 受信した相手をESP-NOWの送信先として登録する
-    if (!esp_now_is_peer_exist(mac_addr)) {
-        esp_now_peer_info_t peer = {};
-        memcpy(peer.peer_addr, mac_addr, 6);
-        peer.channel = 0;
-        peer.encrypt = false;
-        if (esp_now_add_peer(&peer) != ESP_OK) {
-            return;
-        }
-    }
-
-    unsigned long currentMillis = millis();
-    if (peerData.message_type == ESP_NOW_SOS) {
-        sosReceivedEspNow = true;
-        return;
-    }
-    if (isInCooldown(mac_addr, currentMillis)) {
-        return;
-    }
-
-    switch (peerData.message_type) {
-        case ESP_NOW_OFFER: {
-            struct_message accept = makeMessage(ESP_NOW_ACCEPT, peerData.transaction_id);
-            sendMessage(accept, mac_addr);
-            break;
-        }
-        case ESP_NOW_ACCEPT: {
-            if (isPendingPeer(mac_addr, peerData.transaction_id)) {
-                memcpy(pendingPeerMac, mac_addr, 6);
-                struct_message commit = makeMessage(ESP_NOW_COMMIT, peerData.transaction_id);
-                sendMessage(commit, mac_addr);
-            }
-            break;
-        }
-        case ESP_NOW_COMMIT: {
-            completeExchange(peerData, mac_addr, currentMillis);
-            struct_message commitAck = makeMessage(ESP_NOW_COMMIT_ACK, peerData.transaction_id);
-            sendMessage(commitAck, mac_addr);
-            break;
-        }
-        case ESP_NOW_COMMIT_ACK:
-            if (isPendingPeer(mac_addr, peerData.transaction_id)) {
-                completeExchange(peerData, mac_addr, currentMillis);
-            }
-            break;
-        case ESP_NOW_SOS:
-            break;
-    }
-}
-
-void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    setEspNowStatus(status == ESP_NOW_SEND_SUCCESS
-                        ? ESP_NOW_SENDING
-                        : ESP_NOW_SEND_FAILED);
-}
 
 void setEspNowStatus(EspNowStatus status) {
     espNowStatus = status;
 }
 
-// 起動時の初期設定
 void setupEspNow() {
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
-    if (esp_now_init() != ESP_OK) return;
+    esp_err_t result = esp_now_init();
+    if (result != ESP_OK) {
+        Serial.printf("ESP-NOW initialization failed: %d\n", result);
+        return;
+    }
 
-    memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo);
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, broadcastAddress, sizeof(peer.peer_addr));
+    peer.channel = ESP_NOW_CHANNEL;
+    peer.encrypt = false;
+    if (!esp_now_is_peer_exist(broadcastAddress)) {
+        result = esp_now_add_peer(&peer);
+        if (result != ESP_OK) {
+            Serial.printf("ESP-NOW broadcast peer setup failed: %d\n", result);
+            return;
+        }
+    }
 
     esp_now_register_recv_cb(onEspNowRecv);
     esp_now_register_send_cb(onEspNowSent);
+    Serial.printf("ESP-NOW ready on channel %d; packet size %u bytes\n",
+                  ESP_NOW_CHANNEL,
+                  static_cast<unsigned>(sizeof(CommunicationPacket)));
 }
 
-// 定期的に周りに呼びかける関数
 void sendDummySticker() {
+    CommunicationPacket packet = makePacket(MESSAGE_TYPE_ENCOUNTER);
     setEspNowStatus(ESP_NOW_SENDING);
-    pendingTransactionId = nextTransactionId++;
-    myData = makeMessage(ESP_NOW_OFFER, pendingTransactionId);
-    memcpy(pendingPeerMac, broadcastAddress, 6);
-    esp_now_send(broadcastAddress, (uint8_t *)&myData, sizeof(myData));
+    sendPacket(packet);
 }
 
 void sendSosNotification() {
-    struct_message sosMessage = makeMessage(ESP_NOW_SOS, nextTransactionId++);
-    esp_now_send(broadcastAddress, (uint8_t *)&sosMessage, sizeof(sosMessage));
+    CommunicationPacket packet = makePacket(MESSAGE_TYPE_SOS);
+    sendPacket(packet);
 }

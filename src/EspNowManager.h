@@ -3,23 +3,21 @@
 #include <esp_now.h>
 #include <WiFi.h>
 
-enum EspNowMessageType {
-    ESP_NOW_OFFER,
-    ESP_NOW_ACCEPT,
-    ESP_NOW_COMMIT,
-    ESP_NOW_COMMIT_ACK,
-    ESP_NOW_SOS
+#include <stddef.h>
+
+// Must remain layout-compatible with CommunicationPacket in the M5GO parent.
+struct CommunicationPacket {
+    char device_id[37];
+    int type; // 0: encounter/sticker request, 1: SOS
+    char stickerId[16];
+    bool isGateway;
 };
 
-// すれ違い通信用のデータ型
-typedef struct struct_message {
-    char device_id[16];     // 自分のデバイスID
-    bool is_parent;         // 親機ならtrue、子機ならfalse
-    bool has_sticker;       // シールを持っているか？
-    char sticker_id[16];    // 渡すシールのID
-    uint32_t transaction_id;
-    EspNowMessageType message_type;
-} struct_message;
+static_assert(sizeof(int) == 4, "Parent protocol requires 32-bit int");
+static_assert(offsetof(CommunicationPacket, type) == 40,
+              "CommunicationPacket layout mismatch");
+static_assert(sizeof(CommunicationPacket) == 64,
+              "CommunicationPacket layout mismatch");
 
 enum EspNowStatus {
     ESP_NOW_WAITING,
@@ -29,8 +27,6 @@ enum EspNowStatus {
     ESP_NOW_SEND_FAILED
 };
 
-// このデバイスが親機かどうか（親機ではtrueに設定する）
-extern bool isParentDevice;
 extern volatile EspNowStatus espNowStatus;
 
 // main.cpp用のフラグ関数
@@ -39,6 +35,7 @@ extern volatile bool sosReceivedEspNow;
 extern char displayStickerId[16];
 extern bool getSticker;
 extern bool isRareSticker;
+extern volatile bool lastEncounterWasParent;
 
 // 関数リスト
 void setupEspNow();
