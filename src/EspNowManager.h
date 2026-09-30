@@ -41,6 +41,7 @@ extern volatile bool sosReceivedEspNow;
 extern char displayStickerId[16];
 extern bool getSticker;
 extern bool isRareSticker;
+extern volatile bool lastEncounterWasParent;
 
 // 関数リスト
 void setupEspNow();
