@@ -19,10 +19,8 @@
 #define BUZZER_PIN 3
 
 #define BATTERY_PIN 0
-#define VCC 3.3
 #define BATTERY_100_VOLT_HALF 4.2 / 2
 #define BATTERY_0_VOLT_HALF 3.2 / 2
-#define ANALOG_RESOLUTION 4096
 
 #define LCD_SCK_PIN 4
 #define LCD_SDA_PIN 5
@@ -33,7 +31,6 @@
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-// #define COMMUNICATION_TEST_DISPLAY
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 SemaphoreHandle_t lcdMutex = NULL;
@@ -137,12 +134,6 @@ void resetSosAlarm() {
 
 void setup() {
   Serial.begin(115200);
-  unsigned long serialStartTime = millis();
-  while (!Serial && millis() - serialStartTime < 5000) {
-    delay(10);
-  }
-  Serial.println();
-  Serial.println("Boot: serial ready");
 
   lcdMutex = xSemaphoreCreateMutex();
 
@@ -234,7 +225,6 @@ float getBatteryPercent() {
   return percent * 100.0;
 }
 
-bool sended = false;
 int lastBtn1State = HIGH;         // ボタン1の以前の状態
 unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
 
@@ -263,9 +253,6 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
-#ifdef COMMUNICATION_TEST_DISPLAY
-  static unsigned long lastCommunicationDisplayTime = 0;
-#endif
   // すれ違い結果の画面表示
   if (encounterFlag) {
     encounterFlag = false;
@@ -291,16 +278,6 @@ void loop() {
 
   if (bleFlag) {
     bleFlag = false;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
-      /*
-      display.setCursor(0,0);
-      display.clearDisplay();
-      display.printf("BLE Mac:\n %s\n", lastBLEMac.c_str());
-      display.printf("RSSI:\n %d dBm\n", lastRSSI);
-      display.display();
-      */
-      xSemaphoreGive(lcdMutex);
-    }
   }
 
   int currentBtn1State = digitalRead(BUTTON_1_PIN);
@@ -336,10 +313,6 @@ void loop() {
       displayClearTime = currentMillis + 5000;
       needDisplayClear = true;
     }
-
-    // 通信関係は調整中
-    // if (!sended) sendEspNow("ESP NOW !!");
-    // sended = true;
   }
 
   if (needDisplayClear && currentMillis >= displayClearTime) {
@@ -372,22 +345,6 @@ void loop() {
   digitalWrite(BUZZER_PIN, outBuzzer);
   digitalWrite(RED_LED_PIN, outRedLed);
   digitalWrite(GREEN_LED_PIN, outGreenLed);
-
-#ifdef COMMUNICATION_TEST_DISPLAY
-  if (currentMillis - lastCommunicationDisplayTime >= 500) {
-    lastCommunicationDisplayTime = currentMillis;
-    displayCommunicationTestStatus(
-        isWifiConnected(),
-        getCurrentRadioChannel(),
-        1,
-        espNowTxSuccessCount,
-        espNowTxFailureCount,
-        espNowRxCount,
-        espNowInvalidRxCount,
-        espNowLastRxType,
-        espNowLastRxIsGateway);
-  }
-#endif
 
   delay(100);
 }

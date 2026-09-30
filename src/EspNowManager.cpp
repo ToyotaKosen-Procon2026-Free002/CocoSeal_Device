@@ -83,7 +83,6 @@ bool sendPacket(const CommunicationPacket& packet) {
 
 void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     if (dataLen != sizeof(CommunicationPacket)) {
-        ++espNowInvalidRxCount;
         Serial.printf("Ignoring incompatible ESP-NOW packet: %d bytes\n",
                       dataLen);
         return;
@@ -93,9 +92,6 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     memcpy(&packet, data, sizeof(packet));
     packet.device_id[sizeof(packet.device_id) - 1] = '\0';
     packet.stickerId[sizeof(packet.stickerId) - 1] = '\0';
-    ++espNowRxCount;
-    espNowLastRxType = packet.type;
-    espNowLastRxIsGateway = packet.isGateway;
 
     if (packet.type == MESSAGE_TYPE_SOS) {
         if (!packet.isGateway) {
@@ -133,11 +129,6 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
 }
 
 void onEspNowSent(const uint8_t *, esp_now_send_status_t status) {
-    if (status == ESP_NOW_SEND_SUCCESS) {
-        ++espNowTxSuccessCount;
-    } else {
-        ++espNowTxFailureCount;
-    }
     setEspNowStatus(status == ESP_NOW_SEND_SUCCESS
                         ? ESP_NOW_SENDING
                         : ESP_NOW_SEND_FAILED);
@@ -151,12 +142,6 @@ bool getSticker = false;
 bool isRareSticker = false;
 volatile bool lastEncounterWasParent = false;
 volatile EspNowStatus espNowStatus = ESP_NOW_WAITING;
-volatile uint32_t espNowTxSuccessCount = 0;
-volatile uint32_t espNowTxFailureCount = 0;
-volatile uint32_t espNowRxCount = 0;
-volatile uint32_t espNowInvalidRxCount = 0;
-volatile int espNowLastRxType = -1;
-volatile bool espNowLastRxIsGateway = false;
 
 void setEspNowStatus(EspNowStatus status) {
     espNowStatus = status;

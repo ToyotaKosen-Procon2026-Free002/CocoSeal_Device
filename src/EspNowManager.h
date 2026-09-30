@@ -28,12 +28,6 @@ enum EspNowStatus {
 };
 
 extern volatile EspNowStatus espNowStatus;
-extern volatile uint32_t espNowTxSuccessCount;
-extern volatile uint32_t espNowTxFailureCount;
-extern volatile uint32_t espNowRxCount;
-extern volatile uint32_t espNowInvalidRxCount;
-extern volatile int espNowLastRxType;
-extern volatile bool espNowLastRxIsGateway;
 
 // main.cpp用のフラグ関数
 extern volatile bool encounterFlag;
