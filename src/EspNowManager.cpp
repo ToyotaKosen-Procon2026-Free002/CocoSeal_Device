@@ -1,4 +1,6 @@
 #include "EspNowManager.h"
+#include "DeviceIdentity.h"
+#include "LocalDatabase.h"
 
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
@@ -57,11 +59,7 @@ void recordEncounter(const uint8_t *macAddr, unsigned long now) {
 
 CommunicationPacket makePacket(int type) {
     CommunicationPacket packet = {};
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(packet.device_id, sizeof(packet.device_id),
-             "ESP-%02X%02X%02X%02X%02X%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    snprintf(packet.device_id, sizeof(packet.device_id), "%s", getDeviceId());
     packet.type = type;
     snprintf(packet.stickerId, sizeof(packet.stickerId), "%s", "st_005");
     packet.isGateway = false;
@@ -96,6 +94,10 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     if (packet.type == MESSAGE_TYPE_SOS) {
         if (!packet.isGateway) {
             Serial.printf("SOS received from %s\n", packet.device_id);
+            if (!queueSosEvent(LOCAL_EVENT_SOS_RECEIVED, packet.device_id,
+                               getDeviceId())) {
+                Serial.println("Warning: received SOS is not queued locally");
+            }
             sosReceivedEspNow = true;
         }
         return;
@@ -113,6 +115,10 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     }
     recordEncounter(macAddr, now);
 
+    if (!queueEncounterEvent(packet.device_id, packet.isGateway,
+                             packet.stickerId)) {
+        Serial.println("Warning: encounter is not queued locally");
+    }
     getSticker = packet.stickerId[0] != '\0';
     snprintf(displayStickerId, sizeof(displayStickerId), "%s",
              packet.stickerId);
