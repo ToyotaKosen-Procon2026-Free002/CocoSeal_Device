@@ -3,7 +3,9 @@
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
 #include "DisplayManager.h"
+#include "DeviceIdentity.h"
 #include "EspNowManager.h"
+#include "LocalDatabase.h"
 #include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <NimBLEDevice.h>
@@ -118,6 +120,9 @@ void LoRaSendTask() {
 
 void triggerSos() {
   isAlarmActive = true;
+  if (!saveSosSentEvent()) {
+    Serial.println("Warning: SOS event was not persisted before transmission");
+  }
   sendSosNotification();
   LoRaSendTask();
   displaySOSAlert();
@@ -134,6 +139,20 @@ void resetSosAlarm() {
 
 void setup() {
   Serial.begin(115200);
+
+  if (!initializeDeviceIdentity()) {
+    Serial.println("Boot error: device identity initialization failed");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  if (!initializeLocalDatabase()) {
+    Serial.println("Boot error: local event database initialization failed");
+    while (true) {
+      delay(1000);
+    }
+  }
 
   lcdMutex = xSemaphoreCreateMutex();
 
@@ -232,6 +251,7 @@ void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
   maintainWifiConnection();
+  processQueuedLocalEvents();
 
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;
