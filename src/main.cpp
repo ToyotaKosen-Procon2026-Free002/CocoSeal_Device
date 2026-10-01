@@ -6,6 +6,7 @@
 #include "DeviceIdentity.h"
 #include "EspNowManager.h"
 #include "LocalDatabase.h"
+#include "SealInventory.h"
 #include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <NimBLEDevice.h>
@@ -149,6 +150,13 @@ void setup() {
 
   if (!initializeLocalDatabase()) {
     Serial.println("Boot error: local event database initialization failed");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  if (!initializeSealInventory()) {
+    Serial.println("Boot error: seal inventory initialization failed");
     while (true) {
       delay(1000);
     }
