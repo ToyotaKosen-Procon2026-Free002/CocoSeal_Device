@@ -12,7 +12,7 @@ struct LocalEvent {
     uint8_t schemaVersion;
     LocalEventType type;
     uint8_t partnerIsGateway;
-    uint8_t reserved;
+    uint8_t gatewayRewardProcessed;
     uint32_t uptimeMs;
     char bootId[37];
     char eventId[37];
@@ -34,3 +34,5 @@ void processQueuedLocalEvents();
 size_t getPendingLocalEventCount();
 bool getPendingLocalEvent(size_t index, LocalEvent& event);
 bool markLocalEventSynced(const char* eventId);
+bool getNextPendingGatewayEncounter(LocalEvent& event);
+bool markGatewayRewardProcessed(const char* eventId);

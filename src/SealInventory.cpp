@@ -6,10 +6,11 @@
 namespace {
 constexpr char PREFERENCES_NAMESPACE[] = "seals";
 constexpr char INVENTORY_KEY[] = "state";
-constexpr uint8_t SCHEMA_VERSION = 1;
+constexpr uint8_t SCHEMA_VERSION = 2;
 constexpr size_t MAX_SEAL_TYPES = 32;
+constexpr size_t MAX_DAILY_GATEWAYS = 10;
 
-struct InventoryState {
+struct LegacyInventoryState {
     uint8_t schemaVersion;
     uint8_t itemCount;
     uint8_t reserved[2];
@@ -17,10 +18,38 @@ struct InventoryState {
     uint32_t checksum;
 };
 
+struct GatewayAward {
+    char gatewayId[37];
+    uint32_t lastAwardDate;
+};
+
+struct InventoryState {
+    uint8_t schemaVersion;
+    uint8_t itemCount;
+    uint8_t reserved[2];
+    SealInventoryItem items[MAX_SEAL_TYPES];
+    GatewayAward gatewayAwards[MAX_DAILY_GATEWAYS];
+    uint32_t checksum;
+};
+static_assert(sizeof(InventoryState) <= 1984,
+              "Inventory state exceeds the supported NVS blob size");
+
 uint32_t calculateChecksum(const InventoryState& state) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&state);
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < offsetof(InventoryState, checksum); ++i) {
+        crc ^= bytes[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+        }
+    }
+    return ~crc;
+}
+
+uint32_t calculateLegacyChecksum(const LegacyInventoryState& state) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&state);
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < offsetof(LegacyInventoryState, checksum); ++i) {
         crc ^= bytes[i];
         for (uint8_t bit = 0; bit < 8; ++bit) {
             crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
@@ -53,6 +82,15 @@ bool isValidState(const InventoryState& state) {
             }
         }
     }
+    for (const GatewayAward& award : state.gatewayAwards) {
+        if (award.gatewayId[0] &&
+            (!isValidSealId(award.gatewayId) || award.lastAwardDate == 0)) {
+            return false;
+        }
+        if (!award.gatewayId[0] && award.lastAwardDate != 0) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -71,14 +109,40 @@ bool loadState(InventoryState& state) {
         return true;
     }
 
-    bool loaded = length == sizeof(state) &&
-                  preferences.getBytes(INVENTORY_KEY, &state, sizeof(state)) ==
-                      sizeof(state);
+    if (length == sizeof(state)) {
+        bool loaded =
+            preferences.getBytes(INVENTORY_KEY, &state, sizeof(state)) ==
+            sizeof(state);
+        preferences.end();
+        if (!loaded || !isValidState(state)) {
+            Serial.println("Seal inventory error: stored data failed validation");
+            return false;
+        }
+        return true;
+    }
+
+    LegacyInventoryState legacy = {};
+    bool loaded = length == sizeof(legacy) &&
+                  preferences.getBytes(
+                      INVENTORY_KEY, &legacy, sizeof(legacy)) == sizeof(legacy);
     preferences.end();
-    if (!loaded || !isValidState(state)) {
+    if (!loaded || legacy.schemaVersion != 1 ||
+        legacy.itemCount > MAX_SEAL_TYPES ||
+        legacy.checksum != calculateLegacyChecksum(legacy)) {
         Serial.println("Seal inventory error: stored data failed validation");
         return false;
     }
+
+    state = {};
+    state.schemaVersion = SCHEMA_VERSION;
+    state.itemCount = legacy.itemCount;
+    memcpy(state.items, legacy.items, sizeof(legacy.items));
+    state.checksum = calculateChecksum(state);
+    if (!isValidState(state)) {
+        Serial.println("Seal inventory error: legacy inventory failed validation");
+        return false;
+    }
+    Serial.println("Seal inventory: migrated local inventory schema");
     return true;
 }
 
@@ -140,14 +204,15 @@ bool initializeSealInventory() {
         Serial.println("Seal inventory error: failed to open NVS");
         return false;
     }
-    bool hasStoredState = preferences.isKey(INVENTORY_KEY);
+    size_t storedLength = preferences.getBytesLength(INVENTORY_KEY);
+    bool hasStoredState = storedLength != 0;
     preferences.end();
 
     InventoryState state = {};
     if (!loadState(state)) {
         return false;
     }
-    if (!hasStoredState) {
+    if (!hasStoredState || storedLength != sizeof(state)) {
         return saveState(state);
     }
     return true;
@@ -231,6 +296,62 @@ bool exchangeOwnedSeals(const char* offeredSealId,
     }
 
     if (!addToState(updated, receivedSealId, 1)) {
+        return false;
+    }
+    return saveState(updated);
+}
+
+bool awardGatewaySealOncePerDay(const char* gatewayId,
+                                const char* sealId,
+                                uint32_t localDateKey) {
+    if (!isValidSealId(gatewayId) || !isValidSealId(sealId) ||
+        localDateKey == 0) {
+        Serial.println("Seal inventory error: invalid gateway award data");
+        return false;
+    }
+
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+
+    GatewayAward* availableSlot = nullptr;
+    GatewayAward* oldestSlot = nullptr;
+    for (GatewayAward& award : state.gatewayAwards) {
+        if (!award.gatewayId[0]) {
+            if (!availableSlot) {
+                availableSlot = &award;
+            }
+            continue;
+        }
+        if (strcmp(award.gatewayId, gatewayId) == 0) {
+            if (award.lastAwardDate == localDateKey) {
+                return true;
+            }
+            availableSlot = &award;
+            break;
+        }
+        if (!oldestSlot || award.lastAwardDate < oldestSlot->lastAwardDate) {
+            oldestSlot = &award;
+        }
+    }
+
+    if (!availableSlot) {
+        if (!oldestSlot || oldestSlot->lastAwardDate >= localDateKey) {
+            Serial.println("Seal inventory error: daily gateway award table is full");
+            return false;
+        }
+        availableSlot = oldestSlot;
+    }
+
+    InventoryState updated = state;
+    size_t slotIndex = static_cast<size_t>(
+        availableSlot - state.gatewayAwards);
+    GatewayAward& updatedAward = updated.gatewayAwards[slotIndex];
+    snprintf(updatedAward.gatewayId, sizeof(updatedAward.gatewayId), "%s",
+             gatewayId);
+    updatedAward.lastAwardDate = localDateKey;
+    if (!addToState(updated, sealId, 1)) {
         return false;
     }
     return saveState(updated);

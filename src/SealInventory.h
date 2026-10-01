@@ -15,3 +15,6 @@ bool addOwnedSeal(const char* sealId, uint16_t count);
 bool setSealTradeCount(const char* sealId, uint16_t count);
 bool exchangeOwnedSeals(const char* offeredSealId,
                         const char* receivedSealId);
+bool awardGatewaySealOncePerDay(const char* gatewayId,
+                                const char* sealId,
+                                uint32_t localDateKey);

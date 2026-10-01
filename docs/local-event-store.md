@@ -38,3 +38,17 @@ count, then adds one received copy. It fails without changing the stored state
 if no offered copy is in the trade pool or if the inventory cannot fit the
 received seal. Encounter packets do not call this API: exchange completion and
 the initial inventory bootstrap still need to be defined.
+
+## Gateway sticker awards
+
+Gateway encounter events remain pending for rewards until SNTP confirms the
+current Japan-local date. The firmware then adds the received sticker at most
+once per gateway per calendar day. The owned seal addition and the gateway/day
+deduplication record are persisted together in the inventory snapshot. Encounter
+events received while offline are considered when trusted time becomes
+available; since the wire packet has no event timestamp, such deferred awards
+use the day on which time is synchronized.
+
+Daily deduplication retains up to ten gateway IDs. A new day can reuse the
+oldest prior-day slot; if all ten slots have already been used on the current
+day, another gateway's reward is deferred rather than risking duplicate awards.

@@ -260,6 +260,26 @@ void loop() {
 
   maintainWifiConnection();
   processQueuedLocalEvents();
+  static unsigned long lastGatewayRewardProcess = 0;
+  if (currentMillis - lastGatewayRewardProcess >= 5000) {
+    lastGatewayRewardProcess = currentMillis;
+    uint32_t localDateKey = 0;
+    LocalEvent gatewayEncounter = {};
+    if (getNextPendingGatewayEncounter(gatewayEncounter)) {
+      if (!gatewayEncounter.stickerId[0]) {
+        Serial.printf("Skipping gateway encounter without sticker: %s\n",
+                      gatewayEncounter.eventId);
+        markGatewayRewardProcessed(gatewayEncounter.eventId);
+      } else if (getTrustedLocalDateKey(localDateKey) &&
+                 awardGatewaySealOncePerDay(gatewayEncounter.partnerDeviceId,
+                                            gatewayEncounter.stickerId,
+                                            localDateKey)) {
+        if (!markGatewayRewardProcessed(gatewayEncounter.eventId)) {
+          Serial.println("Warning: gateway reward state was not finalized");
+        }
+      }
+    }
+  }
 
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;

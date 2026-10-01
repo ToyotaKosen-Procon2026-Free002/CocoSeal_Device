@@ -323,3 +323,61 @@ bool markLocalEventSynced(const char* eventId) {
     preferences.end();
     return removed;
 }
+
+bool getNextPendingGatewayEncounter(LocalEvent& event) {
+    Preferences preferences;
+    if (!preferences.begin(PREFERENCES_NAMESPACE, true)) {
+        Serial.println("Local DB error: failed to read gateway encounters");
+        return false;
+    }
+
+    bool found = false;
+    for (size_t i = 0; i < MAX_PENDING_EVENTS; ++i) {
+        LocalEvent candidate = {};
+        if (!readSlot(preferences, i, candidate) ||
+            candidate.type != LOCAL_EVENT_ENCOUNTER ||
+            !candidate.partnerIsGateway ||
+            candidate.gatewayRewardProcessed) {
+            continue;
+        }
+        event = candidate;
+        found = true;
+        break;
+    }
+    preferences.end();
+    return found;
+}
+
+bool markGatewayRewardProcessed(const char* eventId) {
+    if (!eventId || !eventId[0]) {
+        Serial.println("Local DB error: gateway reward event has no ID");
+        return false;
+    }
+
+    Preferences preferences;
+    if (!preferences.begin(PREFERENCES_NAMESPACE, false)) {
+        Serial.println("Local DB error: failed to update gateway encounter");
+        return false;
+    }
+
+    bool updated = false;
+    for (size_t i = 0; i < MAX_PENDING_EVENTS; ++i) {
+        LocalEvent event = {};
+        if (!readSlot(preferences, i, event) ||
+            strcmp(event.eventId, eventId) != 0) {
+            continue;
+        }
+        event.gatewayRewardProcessed = 1;
+        event.checksum = calculateChecksum(event);
+        char key[4];
+        slotKey(i, key, sizeof(key));
+        updated = preferences.putBytes(key, &event, sizeof(event)) ==
+                  sizeof(event);
+        break;
+    }
+    preferences.end();
+    if (!updated) {
+        Serial.println("Local DB error: failed to mark gateway reward processed");
+    }
+    return updated;
+}

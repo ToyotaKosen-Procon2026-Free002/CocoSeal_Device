@@ -2,6 +2,8 @@
 
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_sntp.h>
+#include <time.h>
 
 #define ESP_NOW_FALLBACK_CHANNEL 1
 
@@ -15,6 +17,7 @@
 
 namespace {
 unsigned long lastConnectionAttempt = 0;
+bool networkTimeSyncConfigured = false;
 
 void setEspNowFallbackChannel() {
     esp_err_t result =
@@ -45,6 +48,8 @@ bool setupWifi(unsigned long timeoutMs) {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
+        configTzTime("JST-9", "pool.ntp.org", "time.google.com");
+        networkTimeSyncConfigured = true;
         Serial.printf("Wi-Fi connected, IP: %s, channel: %u\n",
                       WiFi.localIP().toString().c_str(),
                       WiFi.channel());
@@ -60,6 +65,11 @@ bool setupWifi(unsigned long timeoutMs) {
 
 void maintainWifiConnection(unsigned long retryIntervalMs) {
     if (WiFi.status() == WL_CONNECTED) {
+        if (!networkTimeSyncConfigured) {
+            configTzTime("JST-9", "pool.ntp.org", "time.google.com");
+            networkTimeSyncConfigured = true;
+            Serial.println("Network time synchronization started (JST)");
+        }
         return;
     }
 
@@ -86,4 +96,24 @@ String getWifiIpAddress() {
         return String();
     }
     return WiFi.localIP().toString();
+}
+
+bool getTrustedLocalDateKey(uint32_t& dateKey) {
+    dateKey = 0;
+    if (!networkTimeSyncConfigured ||
+        sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+        return false;
+    }
+
+    time_t now = time(nullptr);
+    struct tm localTime = {};
+    if (now < 1735689600 || localtime_r(&now, &localTime) == nullptr ||
+        localTime.tm_year + 1900 < 2025) {
+        return false;
+    }
+
+    dateKey = static_cast<uint32_t>((localTime.tm_year + 1900) * 10000 +
+                                    (localTime.tm_mon + 1) * 100 +
+                                    localTime.tm_mday);
+    return true;
 }
