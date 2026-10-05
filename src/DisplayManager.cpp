@@ -102,7 +102,7 @@ void displayBattery(float percent) {
 }
 
 // すれ違い結果の表示
-void displayEncounter(EncounterSource source, const char* stickerId) {
+void displayEncounter(EncounterSource source) {
     if (source == ENCOUNTER_SOURCE_PARENT) {
         const char* lines[] = {
             "testをとおったよ",
@@ -113,13 +113,82 @@ void displayEncounter(EncounterSource source, const char* stickerId) {
         return;
     }
 
-    char stickerLine[24];
-    snprintf(stickerLine, sizeof(stickerLine), "シール[%s]",
-             stickerId && stickerId[0] ? stickerId : "st001");
-    const char* lines[] = {
-        "testとすれちがい",
-        stickerLine,
-        "ゲット！"
-    };
-    drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    beginJapaneseScreen();
+    u8g2.setCursor(0, 12);
+    u8g2.print("IDとすれちがい");
+    display.display();
+    xSemaphoreGive(lcdMutex);
+}
+
+void displayTradeReceivedSeal(const char* stickerId) {
+    const char* id = stickerId && stickerId[0] ? stickerId : "unknown";
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    beginJapaneseScreen();
+    u8g2.setCursor(0, 12);
+    u8g2.print("IDとすれちがい");
+
+    u8g2.setCursor(0, 32);
+    u8g2.print("シール[");
+
+    u8g2.setFont(u8g2_font_5x8_tf);
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    char firstIdLine[19];
+    snprintf(firstIdLine, sizeof(firstIdLine), "%.18s", id);
+    display.setCursor(0, 41);
+    display.print(firstIdLine);
+    bool hasSecondIdLine = id[strlen(firstIdLine)] != '\0';
+    if (hasSecondIdLine) {
+        display.setCursor(0, 50);
+        display.print(id + strlen(firstIdLine));
+    }
+
+    u8g2.setFont(u8g2_font_unifont_t_japanese1);
+    u8g2.setCursor(0, hasSecondIdLine ? 61 : 53);
+    u8g2.print("]ゲット！");
+    display.display();
+    xSemaphoreGive(lcdMutex);
+}
+
+void displayTradeDebugStatus(const char* status) {
+    const char* message = status && status[0] ? status : "UNKNOWN";
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+
+    if (strcmp(message, "NO TRADEABLE SEAL") == 0) {
+        beginJapaneseScreen();
+        u8g2.setCursor(0, 16);
+        u8g2.print("こうかんにだす");
+        u8g2.setCursor(0, 40);
+        u8g2.print("シールがありません");
+        display.display();
+        xSemaphoreGive(lcdMutex);
+        return;
+    }
+
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("TRADE PROCESS");
+    for (size_t line = 0; line < 4; ++line) {
+        char textLine[22];
+        size_t offset = line * (sizeof(textLine) - 1);
+        if (offset >= strlen(message)) {
+            break;
+        }
+        snprintf(textLine, sizeof(textLine), "%.21s", message + offset);
+        display.setCursor(0, 16 + static_cast<int>(line) * 12);
+        display.print(textLine);
+    }
+    display.display();
+    xSemaphoreGive(lcdMutex);
 }

@@ -7,9 +7,13 @@
 #include "EspNowManager.h"
 #include "LocalDatabase.h"
 #include "SealInventory.h"
+#include "TradeProtocol.h"
 #include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <NimBLEDevice.h>
+#include <esp_system.h>
+
+SET_LOOP_TASK_STACK_SIZE(16384);
 
 #define SERVICE_UUID "42fbd1f2-b02c-1ba6-87f8-7d9ca4f3a343"
 
@@ -121,9 +125,6 @@ void LoRaSendTask() {
 
 void triggerSos() {
   isAlarmActive = true;
-  if (!saveSosSentEvent()) {
-    Serial.println("Warning: SOS event was not persisted before transmission");
-  }
   sendSosNotification();
   LoRaSendTask();
   displaySOSAlert();
@@ -138,29 +139,39 @@ void resetSosAlarm() {
   digitalWrite(RED_LED_PIN, HIGH);
 }
 
+void displayBootStatus(const char *message) {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println(message);
+  display.display();
+}
+
+const char *getResetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_UNKNOWN: return "UNKNOWN";
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXTERNAL";
+    case ESP_RST_SW: return "SOFTWARE";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT WATCHDOG";
+    case ESP_RST_TASK_WDT: return "TASK WATCHDOG";
+    case ESP_RST_WDT: return "WATCHDOG";
+    case ESP_RST_DEEPSLEEP: return "DEEP SLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "OTHER";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
-
-  if (!initializeDeviceIdentity()) {
-    Serial.println("Boot error: device identity initialization failed");
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  if (!initializeLocalDatabase()) {
-    Serial.println("Boot error: local event database initialization failed");
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  if (!initializeSealInventory()) {
-    Serial.println("Boot error: seal inventory initialization failed");
-    while (true) {
-      delay(1000);
-    }
-  }
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  delay(1000);
+  Serial.printf("Boot: reset reason %d (%s)\n",
+                static_cast<int>(resetReason),
+                getResetReasonName(resetReason));
 
   lcdMutex = xSemaphoreCreateMutex();
 
@@ -181,9 +192,15 @@ void setup() {
     while (true);
   }
   Serial.printf("Boot: OLED initialized at 0x%02X\n", oledAddress);
+  displayBootStatus("Starting device...");
   initializeJapaneseDisplay();
   display.clearDisplay();
   display.display();
+  displayBootStatus("Reset reason:");
+  display.setCursor(0, 12);
+  display.println(getResetReasonName(resetReason));
+  display.display();
+  delay(3000);
 
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
@@ -199,9 +216,60 @@ void setup() {
   analogSetAttenuation(ADC_11db);
   analogReadResolution(12);
 
+  Serial.println("Boot: initializing device identity");
+  displayBootStatus("Checking device identity...");
+  if (!initializeDeviceIdentity()) {
+    Serial.println("Boot error: device identity initialization failed");
+    displayBootStatus("BOOT ERROR: ID / key");
+    while (true) {
+      delay(1000);
+    }
+  }
+  Serial.printf("Child UUID: %s\n", getDeviceId());
+
+  Serial.println("Boot: initializing local event database");
+  displayBootStatus("Checking event storage...");
+  if (!initializeLocalDatabase()) {
+    Serial.println("Boot error: local event database initialization failed");
+    displayBootStatus("BOOT ERROR: event DB");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("Boot: initializing seal inventory");
+  displayBootStatus("Checking seal storage...");
+  if (!initializeSealInventory()) {
+    Serial.println("Boot error: seal inventory initialization failed");
+    displayBootStatus("BOOT ERROR: seal DB");
+    while (true) {
+      delay(1000);
+    }
+  }
+  if (!initializeTestSealInventory()) {
+    Serial.println("Boot error: test seal initialization failed");
+    displayBootStatus("BOOT ERROR: test seals");
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("Boot: initializing trade protocol");
+  displayBootStatus("Checking trade state...");
+  if (!initializeTradeProtocol()) {
+    const char *tradeError = getTradeProtocolInitError();
+    Serial.printf("Boot warning: trade protocol disabled (%s)\n", tradeError);
+    displayBootStatus("Trade disabled:");
+    display.setCursor(0, 12);
+    display.println(tradeError);
+    display.display();
+    delay(2000);
+  }
+
   delay(10);
 
   Serial.println("Boot: initializing LoRa");
+  displayBootStatus("Initializing LoRa...");
   lora.SetDefaultConfigValue(config);
   while (lora.InitLoRaModule(config)) {
     Serial.println("Boot: LoRa init retry");
@@ -216,8 +284,10 @@ void setup() {
   delay(10);
 
   Serial.println("Boot: initializing ESP-NOW");
+  displayBootStatus("Initializing ESP-NOW...");
   setupEspNow();
   Serial.println("Boot: connecting to Wi-Fi");
+  displayBootStatus("Connecting Wi-Fi...");
   setupWifi();
   if (isWifiConnected() && WiFi.channel() != 1) {
     Serial.printf(
@@ -225,6 +295,7 @@ void setup() {
         WiFi.channel());
   }
   Serial.println("Boot: initializing BLE");
+  displayBootStatus("Initializing BLE...");
 
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   NimBLEDevice::init("ESP_NODE");
@@ -243,6 +314,7 @@ void setup() {
   pScan->setScanCallbacks(new ScanCallbacks(), true);
   pScan->start(0, false, true);
   Serial.println("Boot: setup complete");
+  displayBootStatus("Ready");
 }
   
 
@@ -260,24 +332,27 @@ void loop() {
 
   maintainWifiConnection();
   processQueuedLocalEvents();
-  static unsigned long lastGatewayRewardProcess = 0;
-  if (currentMillis - lastGatewayRewardProcess >= 5000) {
-    lastGatewayRewardProcess = currentMillis;
-    uint32_t localDateKey = 0;
-    LocalEvent gatewayEncounter = {};
-    if (getNextPendingGatewayEncounter(gatewayEncounter)) {
-      if (!gatewayEncounter.stickerId[0]) {
-        Serial.printf("Skipping gateway encounter without sticker: %s\n",
-                      gatewayEncounter.eventId);
-        markGatewayRewardProcessed(gatewayEncounter.eventId);
-      } else if (getTrustedLocalDateKey(localDateKey) &&
-                 awardGatewaySealOncePerDay(gatewayEncounter.partnerDeviceId,
-                                            gatewayEncounter.stickerId,
-                                            localDateKey)) {
-        if (!markGatewayRewardProcessed(gatewayEncounter.eventId)) {
-          Serial.println("Warning: gateway reward state was not finalized");
-        }
-      }
+  processTradeProtocol();
+  static bool tradeDebugVisible = false;
+  static bool tradeDebugInProgress = false;
+  static unsigned long tradeDebugHideAt = 0;
+  char tradeStatus[64];
+  bool currentTradeInProgress = false;
+  if (takeTradeDebugStatus(tradeStatus, sizeof(tradeStatus),
+                           currentTradeInProgress)) {
+    tradeDebugVisible = true;
+    tradeDebugInProgress = currentTradeInProgress;
+    tradeDebugHideAt = currentMillis + 5000;
+    if (!isAlarmActive) {
+      displayTradeDebugStatus(tradeStatus);
+    }
+  }
+  if (tradeDebugVisible && !tradeDebugInProgress &&
+      currentMillis >= tradeDebugHideAt) {
+    tradeDebugVisible = false;
+    if (!isAlarmActive) {
+      display.clearDisplay();
+      display.display();
     }
   }
 
@@ -301,17 +376,33 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
+  static unsigned long tradeResultDisplayTime = 0;
+  static bool tradeResultVisible = false;
+  if (tradeResultVisible && currentMillis - tradeResultDisplayTime >= 5000) {
+    tradeResultVisible = false;
+  }
+
   // すれ違い結果の画面表示
   if (encounterFlag) {
     encounterFlag = false;
 
     // SOS発動中でなければ表示する
-    if (!isAlarmActive) {
+    if (!isAlarmActive && !tradeResultVisible && !tradeDebugVisible) {
       displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
-                                              : ENCOUNTER_SOURCE_CHILD,
-                       displayStickerId);
+                                              : ENCOUNTER_SOURCE_CHILD);
 
       // 5秒後に画面をクリアするためのタイマーをセット
+      displayClearTime = currentMillis + 5000;
+      needDisplayClear = true;
+    }
+  }
+
+  if (!isAlarmActive) {
+    char tradedSealId[37];
+    if (takeCompletedTradeReceivedSeal(tradedSealId, sizeof(tradedSealId))) {
+      displayTradeReceivedSeal(tradedSealId);
+      tradeResultDisplayTime = currentMillis;
+      tradeResultVisible = true;
       displayClearTime = currentMillis + 5000;
       needDisplayClear = true;
     }
@@ -321,7 +412,7 @@ void loop() {
   static unsigned long lastSendTime = 0;
   if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
     lastSendTime = currentMillis;
-    sendDummySticker();
+    sendEncounterAnnouncement();
   }
 
   if (bleFlag) {

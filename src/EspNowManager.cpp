@@ -1,6 +1,7 @@
 #include "EspNowManager.h"
 #include "DeviceIdentity.h"
 #include "LocalDatabase.h"
+#include "TradeProtocol.h"
 
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
@@ -61,7 +62,6 @@ CommunicationPacket makePacket(int type) {
     CommunicationPacket packet = {};
     snprintf(packet.device_id, sizeof(packet.device_id), "%s", getDeviceId());
     packet.type = type;
-    snprintf(packet.stickerId, sizeof(packet.stickerId), "%s", "st_005");
     packet.isGateway = false;
     return packet;
 }
@@ -80,8 +80,12 @@ bool sendPacket(const CommunicationPacket& packet) {
 }
 
 void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
+    if (receiveTradeProtocolPacket(
+            macAddr, data, static_cast<size_t>(dataLen))) {
+        return;
+    }
     if (dataLen != sizeof(CommunicationPacket)) {
-        Serial.printf("Ignoring incompatible ESP-NOW packet: %d bytes\n",
+        Serial.printf("Ignoring unknown ESP-NOW packet: %d bytes\n",
                       dataLen);
         return;
     }
@@ -119,9 +123,14 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
                              packet.stickerId)) {
         Serial.println("Warning: encounter is not queued locally");
     }
+    if (!packet.isGateway) {
+        notifyTradePeerEncounter(macAddr, packet.device_id);
+    }
     getSticker = packet.stickerId[0] != '\0';
     snprintf(displayStickerId, sizeof(displayStickerId), "%s",
              packet.stickerId);
+    snprintf(displayPeerDeviceId, sizeof(displayPeerDeviceId), "%s",
+             packet.device_id[0] ? packet.device_id : "unknown");
     lastEncounterWasParent = packet.isGateway;
     // The parent packet does not contain a rarity field.
     isRareSticker = false;
@@ -144,6 +153,7 @@ void onEspNowSent(const uint8_t *, esp_now_send_status_t status) {
 volatile bool encounterFlag = false;
 volatile bool sosReceivedEspNow = false;
 char displayStickerId[16] = "";
+char displayPeerDeviceId[37] = "";
 bool getSticker = false;
 bool isRareSticker = false;
 volatile bool lastEncounterWasParent = false;
@@ -183,7 +193,7 @@ void setupEspNow() {
                   static_cast<unsigned>(sizeof(CommunicationPacket)));
 }
 
-void sendDummySticker() {
+void sendEncounterAnnouncement() {
     CommunicationPacket packet = makePacket(MESSAGE_TYPE_ENCOUNTER);
     setEspNowStatus(ESP_NOW_SENDING);
     sendPacket(packet);

@@ -33,12 +33,13 @@ extern volatile EspNowStatus espNowStatus;
 extern volatile bool encounterFlag;
 extern volatile bool sosReceivedEspNow;
 extern char displayStickerId[16];
+extern char displayPeerDeviceId[37];
 extern bool getSticker;
 extern bool isRareSticker;
 extern volatile bool lastEncounterWasParent;
 
 // 関数リスト
 void setupEspNow();
-void sendDummySticker();
+void sendEncounterAnnouncement();
 void sendSosNotification();
 void setEspNowStatus(EspNowStatus status);

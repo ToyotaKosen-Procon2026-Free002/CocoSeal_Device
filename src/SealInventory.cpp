@@ -6,9 +6,10 @@
 namespace {
 constexpr char PREFERENCES_NAMESPACE[] = "seals";
 constexpr char INVENTORY_KEY[] = "state";
-constexpr uint8_t SCHEMA_VERSION = 2;
+constexpr uint8_t SCHEMA_VERSION = 3;
 constexpr size_t MAX_SEAL_TYPES = 32;
 constexpr size_t MAX_DAILY_GATEWAYS = 10;
+constexpr size_t MAX_COMPLETED_TRADES = 4;
 
 struct LegacyInventoryState {
     uint8_t schemaVersion;
@@ -23,12 +24,23 @@ struct GatewayAward {
     uint32_t lastAwardDate;
 };
 
-struct InventoryState {
+struct LegacyInventoryStateV2 {
     uint8_t schemaVersion;
     uint8_t itemCount;
     uint8_t reserved[2];
     SealInventoryItem items[MAX_SEAL_TYPES];
     GatewayAward gatewayAwards[MAX_DAILY_GATEWAYS];
+    uint32_t checksum;
+};
+
+struct InventoryState {
+    uint8_t schemaVersion;
+    uint8_t itemCount;
+    uint8_t tradeReceiptCursor;
+    uint8_t reserved;
+    SealInventoryItem items[MAX_SEAL_TYPES];
+    GatewayAward gatewayAwards[MAX_DAILY_GATEWAYS];
+    char completedTradeIds[MAX_COMPLETED_TRADES][37];
     uint32_t checksum;
 };
 static_assert(sizeof(InventoryState) <= 1984,
@@ -50,6 +62,18 @@ uint32_t calculateLegacyChecksum(const LegacyInventoryState& state) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&state);
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < offsetof(LegacyInventoryState, checksum); ++i) {
+        crc ^= bytes[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+        }
+    }
+    return ~crc;
+}
+
+uint32_t calculateV2Checksum(const LegacyInventoryStateV2& state) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&state);
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < offsetof(LegacyInventoryStateV2, checksum); ++i) {
         crc ^= bytes[i];
         for (uint8_t bit = 0; bit < 8; ++bit) {
             crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
@@ -91,7 +115,20 @@ bool isValidState(const InventoryState& state) {
             return false;
         }
     }
+    if (state.tradeReceiptCursor >= MAX_COMPLETED_TRADES) {
+        return false;
+    }
+    for (const auto& tradeId : state.completedTradeIds) {
+        if (tradeId[0] && !isValidSealId(tradeId)) {
+            return false;
+        }
+    }
     return true;
+}
+
+void copyLegacyGatewayAwards(InventoryState& state,
+                             const GatewayAward* awards) {
+    memcpy(state.gatewayAwards, awards, sizeof(state.gatewayAwards));
 }
 
 bool loadState(InventoryState& state) {
@@ -118,6 +155,33 @@ bool loadState(InventoryState& state) {
             Serial.println("Seal inventory error: stored data failed validation");
             return false;
         }
+        return true;
+    }
+
+    LegacyInventoryStateV2 legacyV2 = {};
+    bool loadedV2 = length == sizeof(legacyV2) &&
+                    preferences.getBytes(
+                        INVENTORY_KEY, &legacyV2, sizeof(legacyV2)) ==
+                        sizeof(legacyV2);
+    if (loadedV2) {
+        preferences.end();
+        if (legacyV2.schemaVersion != 2 ||
+            legacyV2.itemCount > MAX_SEAL_TYPES ||
+            legacyV2.checksum != calculateV2Checksum(legacyV2)) {
+            Serial.println("Seal inventory error: stored data failed validation");
+            return false;
+        }
+        state = {};
+        state.schemaVersion = SCHEMA_VERSION;
+        state.itemCount = legacyV2.itemCount;
+        memcpy(state.items, legacyV2.items, sizeof(legacyV2.items));
+        copyLegacyGatewayAwards(state, legacyV2.gatewayAwards);
+        state.checksum = calculateChecksum(state);
+        if (!isValidState(state)) {
+            Serial.println("Seal inventory error: schema 2 inventory failed validation");
+            return false;
+        }
+        Serial.println("Seal inventory: migrated schema 2 data");
         return true;
     }
 
@@ -218,6 +282,37 @@ bool initializeSealInventory() {
     return true;
 }
 
+bool initializeTestSealInventory() {
+#if defined(ENABLE_TEST_SEAL_DATA)
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+    if (state.itemCount != 0) {
+        Serial.println("Test seals skipped: inventory is not empty");
+        return true;
+    }
+
+    constexpr char TEST_SEAL_IDS[][37] = {
+        "st_test_001", "st_test_002", "st_test_003", "st_test_004"
+    };
+    for (const char* sealId : TEST_SEAL_IDS) {
+        if (!addToState(state, sealId, 1)) {
+            Serial.printf("Test seal seeding failed at %s\n", sealId);
+            return false;
+        }
+        state.items[state.itemCount - 1].tradeCount = 1;
+    }
+    if (!saveState(state)) {
+        return false;
+    }
+    Serial.println("Test inventory seeded with 4 tradeable test seals");
+#else
+    Serial.println("Test seal seeding disabled");
+#endif
+    return true;
+}
+
 size_t getSealInventoryCount() {
     InventoryState state = {};
     return loadState(state) ? state.itemCount : 0;
@@ -230,6 +325,35 @@ bool getSealInventoryItem(size_t index, SealInventoryItem& item) {
     }
     item = state.items[index];
     return true;
+}
+
+bool getFirstTradeableSeal(const char* excludeSealId,
+                           char* sealId,
+                           size_t capacity) {
+    if (!sealId || capacity == 0) {
+        Serial.println("Seal inventory error: invalid trade seal output buffer");
+        return false;
+    }
+    sealId[0] = '\0';
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+    for (size_t i = 0; i < state.itemCount; ++i) {
+        const SealInventoryItem& item = state.items[i];
+        if (item.tradeCount == 0 ||
+            (excludeSealId && excludeSealId[0] &&
+             strcmp(item.sealId, excludeSealId) == 0)) {
+            continue;
+        }
+        if (strlen(item.sealId) + 1 > capacity) {
+            Serial.println("Seal inventory error: trade seal output is too small");
+            return false;
+        }
+        snprintf(sealId, capacity, "%s", item.sealId);
+        return true;
+    }
+    return false;
 }
 
 bool addOwnedSeal(const char* sealId, uint16_t count) {
@@ -299,6 +423,72 @@ bool exchangeOwnedSeals(const char* offeredSealId,
         return false;
     }
     return saveState(updated);
+}
+
+bool applyTradeOnce(const char* transactionId,
+                    const char* offeredSealId,
+                    const char* receivedSealId) {
+    if (!isValidSealId(transactionId) ||
+        !isValidSealId(offeredSealId) ||
+        !isValidSealId(receivedSealId) ||
+        strcmp(offeredSealId, receivedSealId) == 0) {
+        Serial.println("Seal inventory error: invalid trade transaction");
+        return false;
+    }
+
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+    for (const auto& completedId : state.completedTradeIds) {
+        if (strcmp(completedId, transactionId) == 0) {
+            return true;
+        }
+    }
+
+    int offeredIndex = findItem(state, offeredSealId);
+    if (offeredIndex < 0 || state.items[offeredIndex].tradeCount == 0) {
+        Serial.println("Seal inventory error: offered seal is not in trade pool");
+        return false;
+    }
+
+    InventoryState updated = state;
+    SealInventoryItem& offered = updated.items[offeredIndex];
+    --offered.ownedCount;
+    --offered.tradeCount;
+    if (offered.ownedCount == 0) {
+        for (size_t i = offeredIndex + 1; i < updated.itemCount; ++i) {
+            updated.items[i - 1] = updated.items[i];
+        }
+        memset(&updated.items[updated.itemCount - 1], 0,
+               sizeof(updated.items[0]));
+        --updated.itemCount;
+    }
+    if (!addToState(updated, receivedSealId, 1)) {
+        return false;
+    }
+
+    snprintf(updated.completedTradeIds[updated.tradeReceiptCursor],
+             sizeof(updated.completedTradeIds[0]), "%s", transactionId);
+    updated.tradeReceiptCursor =
+        (updated.tradeReceiptCursor + 1) % MAX_COMPLETED_TRADES;
+    return saveState(updated);
+}
+
+bool wasTradeApplied(const char* transactionId) {
+    if (!isValidSealId(transactionId)) {
+        return false;
+    }
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+    for (const auto& completedId : state.completedTradeIds) {
+        if (strcmp(completedId, transactionId) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool awardGatewaySealOncePerDay(const char* gatewayId,
