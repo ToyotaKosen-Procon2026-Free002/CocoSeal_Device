@@ -1,14 +1,23 @@
 # Child device local event storage
 
-Local event persistence is temporarily disabled until server synchronization is
-implemented. Encounters, SOS events, and completed trades are not written to
-NVS or queued for later synchronization.
+Encounter, SOS, and completed-trade events are queued in RAM and persisted to
+the `events` NVS namespace. The queue holds up to 32 events. Encounter and
+completed-trade events are uploaded to the server one at a time after Wi-Fi and
+trusted network time are available. The device removes an event only after the
+server confirms success; failures leave it queued for retry. Gateway sticker
+awards are applied locally before the matching encounter can be removed.
 
-On first boot with this firmware, the `events` NVS namespace removes its old
-event slots (`e00` through `e31`) and boot ID. Device identity, seal inventory,
-and trade receipts are stored in separate namespaces and are not cleared.
-Gateway encounter rewards that previously depended on pending local events are
-also paused while event persistence is disabled.
+Events receive a stable UUID and record both uptime and a boot UUID. If network
+time was unavailable when an event was created, its timestamp can be reconstructed
+after NTP synchronization only while the device has not rebooted. At startup,
+events from a previous boot without a trusted timestamp are discarded because
+their original time cannot be recovered and the server requires a signed event
+timestamp. Events with a timestamp and events from the current boot are retained.
+
+SOS events remain local for now. The server SOS endpoint requires a gateway ID
+and receive timestamp that are not available in the current child-device event.
+The current API contract needed for encounter and trade synchronization is
+documented in `server-sync-api-contract.md`.
 
 ## Seal inventory
 
@@ -29,10 +38,10 @@ same exchange twice.
 Gateway encounter events remain pending for rewards until SNTP confirms the
 current Japan-local date. The firmware then adds the received sticker at most
 once per gateway per calendar day. The owned seal addition and the gateway/day
-deduplication record are persisted together in the inventory snapshot. Encounter
-events received while offline are considered when trusted time becomes
-available; since the wire packet has no event timestamp, such deferred awards
-use the day on which time is synchronized.
+deduplication record are persisted together in the inventory snapshot.
+
+This reward is disabled in contest builds (`CONTEST_MODE=1`), and synchronized
+gateway encounters do not request a seal reward from the server in that mode.
 
 Daily deduplication retains up to ten gateway IDs. A new day can reuse the
 oldest prior-day slot; if all ten slots have already been used on the current

@@ -6,7 +6,23 @@ starting at once, the child with the lexicographically lower UUID initiates.
 Each exchange selects the first available seal ID, and the responder selects a
 different seal ID from its own trade pool.
 
-The protocol uses targeted ESP-NOW unicast on channel 1:
+The protocol uses targeted ESP-NOW unicast on the current radio channel
+(`peer.channel = 0`). When connected to Wi-Fi, ESP-NOW therefore follows the
+Wi-Fi access point's channel. Devices exchanging messages must be on the same
+2.4 GHz channel; if they connect to access points on different channels, they
+cannot exchange ESP-NOW packets:
+
+The PlatformIO firmware environments enable contest mode. In this mode, the
+device connects to its configured Wi-Fi before initializing ESP-NOW, allowing
+both interfaces to share the access point's channel. All devices participating
+in the contest demo must connect to the same access point/channel. If Wi-Fi is
+unavailable at boot, ESP-NOW starts on offline fallback channel 1; after Wi-Fi
+reconnects, ESP-NOW follows the radio's current channel. Set `CONTEST_MODE=0`
+in the build flags to disable Wi-Fi and keep ESP-NOW on channel 1.
+
+Contest mode disables the once-per-day seal reward for gateway encounters. The
+encounter can still be recorded and synchronized, but it does not add a seal
+to the child's local inventory or request a gateway seal reward from the server.
 
 1. `OFFER`: initiator proposes one trade-pool seal.
 2. `ACCEPT`: responder selects its trade-pool seal.

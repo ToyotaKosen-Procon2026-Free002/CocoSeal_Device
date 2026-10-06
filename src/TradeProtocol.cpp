@@ -19,7 +19,6 @@ constexpr char PENDING_KEY[] = "pending";
 constexpr uint8_t EVENT_QUEUE_LENGTH = 8;
 constexpr uint32_t RETRY_INTERVAL_MS = 1500;
 constexpr uint32_t PRE_COMMIT_TIMEOUT_MS = 60000;
-constexpr uint8_t ESP_NOW_CHANNEL = 1;
 
 enum class TradeMessageType : uint8_t {
     OFFER = 1,
@@ -255,7 +254,7 @@ bool ensurePeer(const uint8_t* peerMac) {
     }
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, peerMac, sizeof(peer.peer_addr));
-    peer.channel = ESP_NOW_CHANNEL;
+    peer.channel = 0;
     peer.encrypt = false;
     esp_err_t result = esp_now_add_peer(&peer);
     if (result != ESP_OK) {

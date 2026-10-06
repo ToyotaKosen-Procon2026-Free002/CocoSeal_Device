@@ -3,9 +3,10 @@
 #include "LocalDatabase.h"
 #include "TradeProtocol.h"
 
+#include <WiFi.h>
+
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
-#define ESP_NOW_CHANNEL 1
 #define MESSAGE_TYPE_ENCOUNTER 0
 #define MESSAGE_TYPE_SOS 1
 
@@ -176,7 +177,7 @@ void setupEspNow() {
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, broadcastAddress, sizeof(peer.peer_addr));
-    peer.channel = ESP_NOW_CHANNEL;
+    peer.channel = 0;
     peer.encrypt = false;
     if (!esp_now_is_peer_exist(broadcastAddress)) {
         result = esp_now_add_peer(&peer);
@@ -188,8 +189,9 @@ void setupEspNow() {
 
     esp_now_register_recv_cb(onEspNowRecv);
     esp_now_register_send_cb(onEspNowSent);
-    Serial.printf("ESP-NOW ready on channel %d; packet size %u bytes\n",
-                  ESP_NOW_CHANNEL,
+    Serial.printf("ESP-NOW ready on radio channel %u; peer channel auto\n",
+                  WiFi.channel());
+    Serial.printf("ESP-NOW packet size %u bytes\n",
                   static_cast<unsigned>(sizeof(CommunicationPacket)));
 }
 

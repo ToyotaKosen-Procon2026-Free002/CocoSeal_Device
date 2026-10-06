@@ -15,6 +15,7 @@ struct LocalEvent {
     uint8_t partnerIsGateway;
     uint8_t gatewayRewardProcessed;
     uint32_t uptimeMs;
+    uint32_t timestampUnix;
     char bootId[37];
     char eventId[37];
     char originDeviceId[37];
@@ -39,6 +40,9 @@ bool queueTradeCompleteEvent(const char* peerDeviceId,
 void processQueuedLocalEvents();
 size_t getPendingLocalEventCount();
 bool getPendingLocalEvent(size_t index, LocalEvent& event);
+bool prepareLocalEventTimestamp(LocalEvent& event,
+                                uint32_t currentTimestampUnix,
+                                uint32_t currentUptimeMs);
 bool markLocalEventSynced(const char* eventId);
 bool getNextPendingGatewayEncounter(LocalEvent& event);
 bool markGatewayRewardProcessed(const char* eventId);
