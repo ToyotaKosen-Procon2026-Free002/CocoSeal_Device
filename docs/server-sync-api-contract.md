@@ -5,11 +5,14 @@
 子機は`https://coco-seal.mydns.jp`に接続し、次のエンドポイントを使用します。
 
 - `POST /devices/activate`：デバイスUUIDとP-256公開鍵を登録します。
+- `GET /devices/trading_seals`：子機署名付きでサーバー上の交換プールを取得します。レスポンスの各`seal_id`を端末の交換可能在庫へ反映します。
 - `POST /devices/status`：すれ違いまたは交換完了イベントを1件ずつ送信します。
 
-ファームウェアは公開鍵とECDSA署名を小文字の16進文字列で送信します。現行APIとの互換性がない状態で公開鍵を誤登録しないよう、同期は`SERVER_API_HEX_FIELDS=0`で初期状態では無効です。互換APIをサーバーにデプロイした後に限り、PlatformIOのビルドフラグを`SERVER_API_HEX_FIELDS=1`に変更してください。
+ファームウェアは公開鍵とECDSA署名を小文字の16進文字列で送信します。`SERVER_API_HEX_FIELDS=0`ではサーバー同期が無効になり、互換APIをサーバーにデプロイした環境では`SERVER_API_HEX_FIELDS=1`に設定してください。
 
 ファームウェアはイベントにECDSA P-256 / SHA-256署名を付けます。認証が必要なHTTPリクエストでは`X-Device-Id`と`X-Device-Signature`ヘッダーを使用します。後者は、`device_id`のUTF-8バイト列と**実際に送信するJSONリクエスト本文のバイト列**を連結したデータに対するDER形式の署名を、小文字の16進数にした値です。
+
+`GET /devices/trading_seals`にはJSON本文がないため、`X-Device-Signature`はデバイスIDのUTF-8バイト列だけを署名します。レスポンスの`DeviceSeal`配列に同じ`seal_id`が複数ある場合、その出現数を交換可能枚数として扱います。同期に成功したときだけローカルの交換プールをサーバー内容に置き換え、サーバーアクセスに失敗した場合は既存のローカル在庫を保持します。登録名はこの子機認証APIでは取得できません。現在の`GET /users/devices`はFirebase認証を必要とするため、ファームウェアから呼び出しません。
 
 `/devices/status`のイベント署名対象は、次のUTF-8文字列です。
 

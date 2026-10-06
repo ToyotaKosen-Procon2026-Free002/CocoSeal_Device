@@ -327,6 +327,53 @@ bool getSealInventoryItem(size_t index, SealInventoryItem& item) {
     return true;
 }
 
+bool reconcileServerTradePool(const ServerTradePoolEntry* entries,
+                              size_t entryCount) {
+    if (entryCount > MAX_SEAL_TYPES || (entryCount > 0 && !entries)) {
+        Serial.println("Seal inventory error: invalid server trade pool");
+        return false;
+    }
+
+    InventoryState state = {};
+    if (!loadState(state)) {
+        return false;
+    }
+    for (size_t i = 0; i < state.itemCount; ++i) {
+        state.items[i].tradeCount = 0;
+    }
+
+    for (size_t i = 0; i < entryCount; ++i) {
+        if (!isValidSealId(entries[i].sealId) || entries[i].count == 0) {
+            Serial.println("Seal inventory error: invalid server trade pool entry");
+            return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (strcmp(entries[i].sealId, entries[j].sealId) == 0) {
+                Serial.println("Seal inventory error: duplicate server trade pool entry");
+                return false;
+            }
+        }
+
+        int index = findItem(state, entries[i].sealId);
+        if (index < 0) {
+            if (!addToState(state, entries[i].sealId, entries[i].count)) {
+                return false;
+            }
+            index = static_cast<int>(state.itemCount - 1);
+        } else if (state.items[index].ownedCount < entries[i].count) {
+            state.items[index].ownedCount = entries[i].count;
+        }
+        state.items[index].tradeCount = entries[i].count;
+    }
+
+    if (!saveState(state)) {
+        return false;
+    }
+    Serial.printf("Seal inventory: reconciled %u server tradeable seal types\n",
+                  static_cast<unsigned>(entryCount));
+    return true;
+}
+
 bool getFirstTradeableSeal(const char* excludeSealId,
                            char* sealId,
                            size_t capacity) {

@@ -2,6 +2,7 @@
 
 #include "DeviceIdentity.h"
 #include "LocalDatabase.h"
+#include "SealInventory.h"
 #include "WifiManager.h"
 
 #include <ArduinoJson.h>
@@ -25,6 +26,7 @@
 
 namespace {
 constexpr uint32_t SYNC_INTERVAL_MS = 5000;
+constexpr uint32_t TRADE_POOL_REFRESH_INTERVAL_MS = 30000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 3000;
 constexpr uint32_t SYNC_DIAGNOSTIC_MAGIC = 0x53594E43;
 
@@ -35,6 +37,9 @@ enum SyncDiagnosticStage : uint32_t {
     SYNC_STAGE_FIND_EVENT,
     SYNC_STAGE_ACTIVATE_KEY,
     SYNC_STAGE_ACTIVATE_JSON,
+    SYNC_STAGE_TRADE_POOL_GET,
+    SYNC_STAGE_TRADE_POOL_REQUEST,
+    SYNC_STAGE_TRADE_POOL_PARSE,
     SYNC_STAGE_HTTPS_BEGIN,
     SYNC_STAGE_HTTP_SIGNATURE,
     SYNC_STAGE_HTTP_POST,
@@ -82,8 +87,10 @@ constexpr char SERVER_ROOT_CA[] PROGMEM =
     "-----END CERTIFICATE-----\n";
 
 uint32_t lastSyncAttempt = 0;
+uint32_t lastTradePoolRefreshAttempt = 0;
 bool deviceActivated = false;
 bool syncScheduleInitialized = false;
+bool tradePoolRefreshAttempted = false;
 
 const char* syncStageName(uint32_t stage) {
     switch (stage) {
@@ -92,6 +99,9 @@ const char* syncStageName(uint32_t stage) {
         case SYNC_STAGE_FIND_EVENT: return "finding pending event";
         case SYNC_STAGE_ACTIVATE_KEY: return "reading activation public key";
         case SYNC_STAGE_ACTIVATE_JSON: return "building activation JSON";
+        case SYNC_STAGE_TRADE_POOL_GET: return "fetching server trade pool";
+        case SYNC_STAGE_TRADE_POOL_REQUEST: return "sending trade-pool GET";
+        case SYNC_STAGE_TRADE_POOL_PARSE: return "parsing server trade pool";
         case SYNC_STAGE_HTTPS_BEGIN: return "initializing HTTPS";
         case SYNC_STAGE_HTTP_SIGNATURE: return "signing HTTP request";
         case SYNC_STAGE_HTTP_POST: return "sending HTTP POST";
@@ -281,6 +291,118 @@ bool activateDevice() {
     return true;
 }
 
+bool fetchServerTradePool() {
+    setSyncDiagnosticStage(SYNC_STAGE_TRADE_POOL_GET);
+    WiFiClientSecure client;
+    client.setCACert(SERVER_ROOT_CA);
+
+    HTTPClient http;
+    String url = String(SERVER_BASE_URL) + "/devices/trading_seals";
+    if (!http.begin(client, url)) {
+        Serial.println("Server sync error: failed to initialize trade-pool HTTPS");
+        return false;
+    }
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.addHeader("X-Device-Id", getDeviceId());
+
+    uint8_t signature[MBEDTLS_ECDSA_MAX_LEN] = {};
+    size_t signatureLength = 0;
+    const char* deviceId = getDeviceId();
+    if (!signDeviceMessage(
+            reinterpret_cast<const uint8_t*>(deviceId), strlen(deviceId),
+            signature, sizeof(signature), signatureLength)) {
+        http.end();
+        Serial.println("Server sync error: failed to sign trade-pool request");
+        return false;
+    }
+    http.addHeader("X-Device-Signature", toHex(signature, signatureLength));
+
+    setSyncDiagnosticStage(SYNC_STAGE_TRADE_POOL_REQUEST);
+    int status = http.GET();
+    String responseBody;
+    setSyncDiagnosticStage(SYNC_STAGE_HTTP_RESPONSE);
+    if (status > 0) {
+        responseBody = http.getString();
+        Serial.printf("Server sync: GET /devices/trading_seals returned HTTP %d "
+                      "(%u response bytes)\n",
+                      status,
+                      static_cast<unsigned>(responseBody.length()));
+    } else {
+        Serial.printf("Server sync error: trade-pool HTTPS request failed (%s)\n",
+                      http.errorToString(status).c_str());
+        char tlsError[128] = {};
+        int tlsErrorCode = client.lastError(tlsError, sizeof(tlsError));
+        Serial.printf("Server sync transport: trade-pool TLS error %d (%s)\n",
+                      tlsErrorCode,
+                      tlsErrorCode == 0 ? "none" : tlsError);
+        http.end();
+        return false;
+    }
+    http.end();
+
+    if (status != HTTP_CODE_OK) {
+        if (!responseBody.isEmpty()) {
+            Serial.println(responseBody);
+        }
+        return false;
+    }
+
+    setSyncDiagnosticStage(SYNC_STAGE_TRADE_POOL_PARSE);
+    JsonDocument response;
+    DeserializationError error = deserializeJson(response, responseBody);
+    if (error || !response.is<JsonArray>()) {
+        Serial.printf("Server sync error: invalid trade-pool response (%s)\n",
+                      error ? error.c_str() : "expected a JSON array");
+        return false;
+    }
+
+    ServerTradePoolEntry entries[32] = {};
+    size_t entryCount = 0;
+    for (JsonVariantConst value : response.as<JsonArrayConst>()) {
+        const char* sealId = value["seal_id"].as<const char*>();
+        if (!sealId || !sealId[0] || strnlen(sealId, 37) >= 37) {
+            Serial.println("Server sync error: trade-pool item has invalid seal_id");
+            return false;
+        }
+
+        size_t index = 0;
+        while (index < entryCount &&
+               strcmp(entries[index].sealId, sealId) != 0) {
+            ++index;
+        }
+        if (index == entryCount) {
+            if (entryCount >= sizeof(entries) / sizeof(entries[0])) {
+                Serial.println(
+                    "Server sync error: trade pool has too many seal types");
+                return false;
+            }
+            snprintf(entries[index].sealId, sizeof(entries[index].sealId),
+                     "%s", sealId);
+            entries[index].count = 0;
+            ++entryCount;
+        }
+        if (entries[index].count == UINT16_MAX) {
+            Serial.println(
+                "Server sync error: trade-pool seal count overflow");
+            return false;
+        }
+        ++entries[index].count;
+    }
+
+    if (!reconcileServerTradePool(entries, entryCount)) {
+        Serial.println("Server sync error: failed to apply server trade pool");
+        return false;
+    }
+    for (size_t i = 0; i < entryCount; ++i) {
+        Serial.printf("Server sync: trade-pool seal_id=%s count=%u\n",
+                      entries[i].sealId,
+                      static_cast<unsigned>(entries[i].count));
+    }
+    Serial.printf("Server sync: loaded %u tradeable seal types from server\n",
+                  static_cast<unsigned>(entryCount));
+    return true;
+}
+
 bool isSyncableEvent(const LocalEvent& event) {
     return event.type == LOCAL_EVENT_ENCOUNTER ||
            event.type == LOCAL_EVENT_TRADE_COMPLETE;
@@ -439,6 +561,23 @@ void processServerSync() {
         return;
     }
 
+    if (!deviceActivated && !activateDevice()) {
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
+    }
+    if (!tradePoolRefreshAttempted ||
+        nowMillis - lastTradePoolRefreshAttempt >=
+            TRADE_POOL_REFRESH_INTERVAL_MS) {
+        tradePoolRefreshAttempted = true;
+        lastTradePoolRefreshAttempt = nowMillis;
+        if (!fetchServerTradePool()) {
+            syncDiagnosticMagic = 0;
+            syncDiagnosticStage = SYNC_STAGE_IDLE;
+            return;
+        }
+    }
+
     uint32_t currentTimestampUnix = 0;
     setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME, false);
     if (!getTrustedUnixTime(currentTimestampUnix)) {
@@ -478,11 +617,6 @@ void processServerSync() {
         return;
     }
 
-    if (!deviceActivated && !activateDevice()) {
-        syncDiagnosticMagic = 0;
-        syncDiagnosticStage = SYNC_STAGE_IDLE;
-        return;
-    }
     syncEvent(pendingEvent, currentTimestampUnix);
     syncDiagnosticMagic = 0;
     syncDiagnosticStage = SYNC_STAGE_IDLE;
