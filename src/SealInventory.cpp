@@ -5,6 +5,7 @@
 
 namespace {
 constexpr char PREFERENCES_NAMESPACE[] = "seals";
+constexpr char INVENTORY_PARTITION_LABEL[] = "nvs_seals";
 constexpr char INVENTORY_KEY[] = "state";
 constexpr uint8_t SCHEMA_VERSION = 3;
 constexpr size_t MAX_SEAL_TYPES = 32;
@@ -131,9 +132,10 @@ void copyLegacyGatewayAwards(InventoryState& state,
     memcpy(state.gatewayAwards, awards, sizeof(state.gatewayAwards));
 }
 
-bool loadState(InventoryState& state) {
+bool loadStateFromPartition(InventoryState& state,
+                            const char* partitionLabel) {
     Preferences preferences;
-    if (!preferences.begin(PREFERENCES_NAMESPACE, true)) {
+    if (!preferences.begin(PREFERENCES_NAMESPACE, true, partitionLabel)) {
         Serial.println("Seal inventory error: failed to open NVS");
         return false;
     }
@@ -210,10 +212,15 @@ bool loadState(InventoryState& state) {
     return true;
 }
 
+bool loadState(InventoryState& state) {
+    return loadStateFromPartition(state, INVENTORY_PARTITION_LABEL);
+}
+
 bool saveState(InventoryState& state) {
     state.checksum = calculateChecksum(state);
     Preferences preferences;
-    if (!preferences.begin(PREFERENCES_NAMESPACE, false)) {
+    if (!preferences.begin(PREFERENCES_NAMESPACE, false,
+                           INVENTORY_PARTITION_LABEL)) {
         Serial.println("Seal inventory error: failed to open NVS for writing");
         return false;
     }
@@ -264,7 +271,8 @@ bool addToState(InventoryState& state,
 
 bool initializeSealInventory() {
     Preferences preferences;
-    if (!preferences.begin(PREFERENCES_NAMESPACE, false)) {
+    if (!preferences.begin(PREFERENCES_NAMESPACE, false,
+                           INVENTORY_PARTITION_LABEL)) {
         Serial.println("Seal inventory error: failed to open NVS");
         return false;
     }
@@ -272,11 +280,53 @@ bool initializeSealInventory() {
     bool hasStoredState = storedLength != 0;
     preferences.end();
 
+    if (!hasStoredState) {
+        Preferences legacyPreferences;
+        if (!legacyPreferences.begin(PREFERENCES_NAMESPACE, false)) {
+            Serial.println("Seal inventory error: failed to open legacy NVS");
+            return false;
+        }
+        bool hasLegacyState = legacyPreferences.isKey(INVENTORY_KEY);
+        legacyPreferences.end();
+
+        InventoryState legacyState = {};
+        if (hasLegacyState) {
+            if (!loadStateFromPartition(legacyState, nullptr) ||
+                !saveState(legacyState)) {
+                Serial.println(
+                    "Seal inventory error: failed to migrate inventory to "
+                    "dedicated NVS");
+                return false;
+            }
+
+            Preferences cleanupPreferences;
+            if (!cleanupPreferences.begin(PREFERENCES_NAMESPACE, false)) {
+                Serial.println(
+                    "Seal inventory warning: migrated inventory but could "
+                    "not open legacy NVS for cleanup");
+            } else {
+                if (!cleanupPreferences.remove(INVENTORY_KEY)) {
+                    Serial.println(
+                        "Seal inventory warning: migrated inventory but "
+                        "could not remove legacy copy");
+                }
+                cleanupPreferences.end();
+            }
+            Serial.println("Seal inventory: moved data to dedicated NVS");
+        } else {
+            legacyState.schemaVersion = SCHEMA_VERSION;
+            if (!saveState(legacyState)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     InventoryState state = {};
     if (!loadState(state)) {
         return false;
     }
-    if (!hasStoredState || storedLength != sizeof(state)) {
+    if (storedLength != sizeof(state)) {
         return saveState(state);
     }
     return true;

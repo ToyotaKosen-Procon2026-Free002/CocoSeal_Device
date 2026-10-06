@@ -26,6 +26,12 @@ ID's owned and trade-pool counts in one versioned NVS snapshot. Adding seals,
 changing the trade-pool count, and applying a confirmed one-for-one exchange
 are exposed as task-context APIs.
 
+The seal inventory uses a dedicated `nvs_seals` partition so a full pending
+event queue cannot prevent server trade-pool updates. On the first boot with
+this partition layout, an existing inventory snapshot in the default NVS
+partition is copied and verified before its old copy is removed. The default
+NVS partition remains in place for pending events and other preferences.
+
 `exchangeOwnedSeals()` atomically decrements one offered copy and its trade-pool
 count, then adds one received copy. It fails without changing the stored state
 if no offered copy is in the trade pool or if the inventory cannot fit the
