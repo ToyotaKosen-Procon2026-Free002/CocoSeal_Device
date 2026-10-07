@@ -11,7 +11,6 @@
 #include "TradeProtocol.h"
 #include "WifiManager.h"
 #include <esp32_e220900t22s_jp_lib.h>
-#include <NimBLEDevice.h>
 #include <esp_attr.h>
 #include <esp_system.h>
 
@@ -20,8 +19,6 @@
 #endif
 
 SET_LOOP_TASK_STACK_SIZE(16384);
-
-#define SERVICE_UUID "42fbd1f2-b02c-1ba6-87f8-7d9ca4f3a343"
 
 #define RED_LED_PIN 2
 #define GREEN_LED_PIN 8
@@ -52,12 +49,7 @@ CLoRa lora;
 struct LoRaConfigItem_t config;
 struct RecvFrameE220900T22SJP_t data;
 
-NimBLEAdvertising *pAdvertising;
-NimBLEScan *pScan;
-volatile bool bleFlag = false;
 volatile bool sosReceivedLoRa = false;
-int lastRSSI;
-std::string lastBLEMac;
 bool isAlarmActive = false;
 int sosCount = 0;
 
@@ -81,10 +73,6 @@ enum BootStage : uint32_t {
   BOOT_STAGE_LORA_TASK,
   BOOT_STAGE_WIFI,
   BOOT_STAGE_ESPNOW,
-  BOOT_STAGE_BLE_MEMORY,
-  BOOT_STAGE_BLE_INIT,
-  BOOT_STAGE_BLE_ADVERTISING,
-  BOOT_STAGE_BLE_SCAN,
   BOOT_STAGE_COMPLETE
 };
 
@@ -110,10 +98,6 @@ const char* bootStageName(uint32_t stage) {
     case BOOT_STAGE_LORA_TASK: return "LoRa receive task";
     case BOOT_STAGE_WIFI: return "Wi-Fi";
     case BOOT_STAGE_ESPNOW: return "ESP-NOW";
-    case BOOT_STAGE_BLE_MEMORY: return "Bluetooth memory release";
-    case BOOT_STAGE_BLE_INIT: return "BLE initialization";
-    case BOOT_STAGE_BLE_ADVERTISING: return "BLE advertising";
-    case BOOT_STAGE_BLE_SCAN: return "BLE scan";
     case BOOT_STAGE_COMPLETE: return "setup complete";
     default: return "unknown";
   }
@@ -135,19 +119,6 @@ void completeBootStep(BootStage stage) {
   Serial.flush();
 }
 }
-
-class ScanCallbacks : public NimBLEScanCallbacks {
-  void onResult(const NimBLEAdvertisedDevice *device) override {
-    if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-      int rssi = device->getRSSI();
-      std::string addr = device->getAddress().toString();
-
-      lastRSSI = rssi;
-      lastBLEMac = addr;
-      bleFlag = true;
-    }
-  }
-};
 
 void LoRaRecvTask(void *pvParameters) {
   while (1) {
@@ -433,35 +404,6 @@ void setup() {
   setupEspNow();
   completeBootStep(BOOT_STAGE_ESPNOW);
 
-  beginBootStep(BOOT_STAGE_BLE_MEMORY);
-  Serial.println("Boot: initializing BLE");
-  displayBootStatus("Initializing BLE...");
-
-  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-  completeBootStep(BOOT_STAGE_BLE_MEMORY);
-
-  beginBootStep(BOOT_STAGE_BLE_INIT);
-  NimBLEDevice::init("ESP_NODE");
-  completeBootStep(BOOT_STAGE_BLE_INIT);
-  
-  beginBootStep(BOOT_STAGE_BLE_ADVERTISING);
-  pAdvertising = NimBLEDevice::getAdvertising();
-  NimBLEAdvertisementData advData;
-  advData.setName("ESP_NODE");
-  advData.addServiceUUID(SERVICE_UUID);
-  pAdvertising->setAdvertisementData(advData);
-  pAdvertising->start();
-  completeBootStep(BOOT_STAGE_BLE_ADVERTISING);
-
-  beginBootStep(BOOT_STAGE_BLE_SCAN);
-  pScan = NimBLEDevice::getScan();
-  pScan->setActiveScan(true);
-  pScan->setInterval(100);
-  pScan->setWindow(30);
-  pScan->setScanCallbacks(new ScanCallbacks(), true);
-  pScan->start(0, false, true);
-  completeBootStep(BOOT_STAGE_BLE_SCAN);
-
   beginBootStep(BOOT_STAGE_COMPLETE);
   Serial.println("Boot: setup complete");
 #if SERVER_SYNC_RUNTIME_ENABLED
@@ -592,10 +534,6 @@ void loop() {
   if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
     lastSendTime = currentMillis;
     sendEncounterAnnouncement();
-  }
-
-  if (bleFlag) {
-    bleFlag = false;
   }
 
   int currentBtn1State = digitalRead(BUTTON_1_PIN);
