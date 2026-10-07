@@ -19,4 +19,5 @@ void displaySOSAlert();
 void displaySOSReceived();
 void displayBattery(float percent);
 void displayEncounter(EncounterSource source, const char* peerName);
+void displayParentEncounterReward();
 void displayTradeDebugStatus(const char* status);

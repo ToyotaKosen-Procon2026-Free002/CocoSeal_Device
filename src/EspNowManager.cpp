@@ -309,6 +309,10 @@ void scheduleSynchronizedEncounterDisplay(const char* peerDeviceId) {
     synchronizedDisplayPending = true;
 }
 
+bool isSynchronizedEncounterDisplayPending() {
+    return synchronizedDisplayPending;
+}
+
 void processEspNowDisplayEvents() {
     if (!synchronizedDisplayPending ||
         static_cast<int32_t>(millis() - synchronizedDisplayAt) < 0) {

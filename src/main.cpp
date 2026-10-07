@@ -455,9 +455,6 @@ void loop() {
     }
   }
 #endif
-#if SERVER_SYNC_RUNTIME_ENABLED
-  processServerSync();
-#endif
   processTradeProtocol();
   processEspNowDisplayEvents();
   static bool tradeDebugVisible = false;
@@ -465,6 +462,9 @@ void loop() {
   static bool tradeOutcomePending = false;
   static unsigned long tradeOutcomeDisplayAt = 0;
   static char pendingTradeOutcome[64] = {};
+  static bool encounterSequenceActive = false;
+  static bool parentEncounterIntro = false;
+  static unsigned long encounterScreenUntil = 0;
   char tradeStatus[64];
   bool currentTradeInProgress = false;
   if (takeTradeDebugStatus(tradeStatus, sizeof(tradeStatus),
@@ -476,14 +476,6 @@ void loop() {
       tradeOutcomeDisplayAt = currentMillis + 1200;
     }
   }
-  if (tradeDebugVisible && currentMillis >= tradeDebugHideAt) {
-    tradeDebugVisible = false;
-    if (!isAlarmActive) {
-      display.clearDisplay();
-      display.display();
-    }
-  }
-
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;
 
@@ -491,6 +483,8 @@ void loop() {
     sosReceivedEspNow = false;
     sosReceivedLoRa = false;
     isAlarmActive = true;
+    encounterSequenceActive = false;
+    tradeDebugVisible = false;
     displaySOSReceived();
   }
   if (resetPressed) {
@@ -506,27 +500,65 @@ void loop() {
   static bool needDisplayClear = false;
 
   // すれ違い結果の画面表示
-  if (encounterFlag) {
-    // SOS発動中でなければ表示する
-    if (!isAlarmActive && !tradeDebugVisible) {
-      encounterFlag = false;
-      displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
-                                              : ENCOUNTER_SOURCE_CHILD,
-                       displayPeerName);
+  if (encounterFlag && !isAlarmActive) {
+    encounterFlag = false;
+    encounterSequenceActive = true;
+    parentEncounterIntro = lastEncounterWasParent;
+    encounterScreenUntil = currentMillis + 3000;
+    tradeDebugVisible = false;
+    needDisplayClear = false;
+    displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
+                                            : ENCOUNTER_SOURCE_CHILD,
+                     displayPeerName);
+  }
 
-      // 5秒後に画面をクリアするためのタイマーをセット
-      displayClearTime = currentMillis + 5000;
-      needDisplayClear = true;
+  if (encounterSequenceActive &&
+      static_cast<int32_t>(currentMillis - encounterScreenUntil) >= 0 &&
+      !isAlarmActive) {
+    if (parentEncounterIntro) {
+      parentEncounterIntro = false;
+      displayParentEncounterReward();
+      encounterScreenUntil = currentMillis + 3000;
+    } else {
+      encounterSequenceActive = false;
+      if (tradeOutcomePending) {
+        tradeOutcomeDisplayAt = currentMillis;
+      } else if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
     }
   }
-  if (tradeOutcomePending && currentMillis >= tradeOutcomeDisplayAt &&
-      !isAlarmActive) {
+
+  if (tradeOutcomePending &&
+      static_cast<int32_t>(currentMillis - tradeOutcomeDisplayAt) >= 0 &&
+      !encounterSequenceActive && !isAlarmActive) {
     tradeOutcomePending = false;
     tradeDebugVisible = true;
-    tradeDebugHideAt = currentMillis + 5000;
+    tradeDebugHideAt = currentMillis + 3000;
     displayTradeDebugStatus(pendingTradeOutcome);
-    displayClearTime = currentMillis + 5000;
+    displayClearTime = tradeDebugHideAt;
     needDisplayClear = true;
+  }
+
+#if SERVER_SYNC_RUNTIME_ENABLED
+  if (!isSynchronizedEncounterDisplayPending() &&
+      !needDisplayClear && !tradeOutcomePending &&
+      !encounterSequenceActive) {
+    processServerSync();
+  }
+#endif
+
+  if (tradeDebugVisible &&
+      static_cast<int32_t>(currentMillis - tradeDebugHideAt) >= 0 &&
+      !isAlarmActive && !encounterSequenceActive && !encounterFlag) {
+    tradeDebugVisible = false;
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      display.clearDisplay();
+      display.display();
+      xSemaphoreGive(lcdMutex);
+    }
   }
 
   // 定期的に自分のデータを周囲に送信
@@ -602,5 +634,8 @@ void loop() {
   digitalWrite(RED_LED_PIN, outRedLed);
   digitalWrite(GREEN_LED_PIN, outGreenLed);
 
-  delay(100);
+  delay(isSynchronizedEncounterDisplayPending() || tradeOutcomePending ||
+                encounterSequenceActive
+            ? 20
+            : 100);
 }

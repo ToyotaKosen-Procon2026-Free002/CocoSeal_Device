@@ -105,17 +105,17 @@ void displayBattery(float percent) {
 void displayEncounter(EncounterSource source, const char* peerName) {
     const char* name = peerName && peerName[0] ? peerName : "ID";
     if (source == ENCOUNTER_SOURCE_PARENT) {
-        const char* lines[] = {
-            "こうばん",
-            "をとおったよ",
-            "オリジナルシール",
-            "ゲット！"
-        };
+        const char* lines[] = {"こうばん", "をとおったよ"};
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     } else {
         const char* lines[] = {name, "とすれちがい"};
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }
+}
+
+void displayParentEncounterReward() {
+    const char* lines[] = {"オリジナルシール", "ゲット！"};
+    drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
 }
 
 void displayTradeDebugStatus(const char* status) {

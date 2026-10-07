@@ -611,7 +611,6 @@ void handleCommit(const QueuedPacket& queued) {
                                  pendingTrade.peerSealId)) {
         Serial.println("Trade warning: completed trade was not queued for sync");
     }
-    setTradeDebugStatus("COMPLETE: TRADE", false);
     clearPendingTrade();
     Serial.printf("Trade completed with %s\n", packet.senderDeviceId);
     sendAck(packet, queued.peerMac);
@@ -670,9 +669,8 @@ void handleEncounterDisplay(const QueuedPacket& queued) {
 
 void handleTradeResult(const QueuedPacket& queued) {
     const TradePacket& packet = queued.packet;
-    if (hasPendingTrade &&
-        (!sameTransaction(packet, queued.peerMac) ||
-         strcmp(packet.targetDeviceId, getDeviceId()) != 0)) {
+    if (strcmp(packet.targetDeviceId, getDeviceId()) != 0 ||
+        (hasPendingTrade && !sameTransaction(packet, queued.peerMac))) {
         return;
     }
 

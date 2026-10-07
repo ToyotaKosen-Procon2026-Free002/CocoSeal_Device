@@ -56,6 +56,7 @@ void setupEspNow();
 void setLocalDeviceName(const char* name);
 const char* getPeerDeviceName(const char* deviceId);
 void scheduleSynchronizedEncounterDisplay(const char* peerDeviceId);
+bool isSynchronizedEncounterDisplayPending();
 void processEspNowDisplayEvents();
 void sendEncounterAnnouncement();
 void sendSosNotification();
