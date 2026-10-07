@@ -18,6 +18,6 @@ void displaySOSPressCount(int count);
 void displaySOSAlert();
 void displaySOSReceived();
 void displayBattery(float percent);
-void displayEncounter(EncounterSource source);
-void displayTradeReceivedSeal(const char* stickerId);
+void displayEncounter(EncounterSource source, const char* peerName);
+void displayTradeReceivedSeal(const char* peerName, const char* stickerId);
 void displayTradeDebugStatus(const char* status);

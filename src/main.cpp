@@ -466,8 +466,11 @@ void setup() {
   Serial.println("Boot: setup complete");
 #if SERVER_SYNC_RUNTIME_ENABLED
   Serial.println("Server sync runtime: enabled");
+  Serial.println(
+      "BOOT: own device name will be printed after server profile is loaded");
 #else
   Serial.println("Server sync runtime: disabled for diagnosis");
+  Serial.println("BOOT: own device name unavailable (server sync disabled)");
 #endif
   displayBootStatus("Ready");
   completeBootStep(BOOT_STAGE_COMPLETE);
@@ -570,7 +573,8 @@ void loop() {
     // SOS発動中でなければ表示する
     if (!isAlarmActive && !tradeResultVisible && !tradeDebugVisible) {
       displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
-                                              : ENCOUNTER_SOURCE_CHILD);
+                                              : ENCOUNTER_SOURCE_CHILD,
+                       displayPeerName);
 
       // 5秒後に画面をクリアするためのタイマーをセット
       displayClearTime = currentMillis + 5000;
@@ -581,7 +585,7 @@ void loop() {
   if (!isAlarmActive) {
     char tradedSealId[37];
     if (takeCompletedTradeReceivedSeal(tradedSealId, sizeof(tradedSealId))) {
-      displayTradeReceivedSeal(tradedSealId);
+      displayTradeReceivedSeal(displayPeerName, tradedSealId);
       tradeResultDisplayTime = currentMillis;
       tradeResultVisible = true;
       displayClearTime = currentMillis + 5000;

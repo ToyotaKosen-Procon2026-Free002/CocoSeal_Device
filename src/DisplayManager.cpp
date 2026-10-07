@@ -102,57 +102,51 @@ void displayBattery(float percent) {
 }
 
 // すれ違い結果の表示
-void displayEncounter(EncounterSource source) {
+void displayEncounter(EncounterSource source, const char* peerName) {
+    const char* name = peerName && peerName[0] ? peerName : "ID";
     if (source == ENCOUNTER_SOURCE_PARENT) {
         const char* lines[] = {
-            "testをとおったよ",
-            "オリジナルシール",
-            "ゲット！"
+            name,
+            "とすれちがい",
+            "シールゲット！"
         };
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
-        return;
+    } else {
+        const char* lines[] = {name, "とすれちがい"};
+        drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }
-
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
-        return;
-    }
-
-    beginJapaneseScreen();
-    u8g2.setCursor(0, 12);
-    u8g2.print("IDとすれちがい");
-    display.display();
-    xSemaphoreGive(lcdMutex);
 }
 
-void displayTradeReceivedSeal(const char* stickerId) {
+void displayTradeReceivedSeal(const char* peerName, const char* stickerId) {
     const char* id = stickerId && stickerId[0] ? stickerId : "unknown";
+    const char* name = peerName && peerName[0] ? peerName : "ID";
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
         return;
     }
 
     beginJapaneseScreen();
     u8g2.setCursor(0, 12);
-    u8g2.print("IDとすれちがい");
+    u8g2.print(name);
+    u8g2.setCursor(0, 28);
+    u8g2.print("とすれちがい");
 
-    u8g2.setCursor(0, 32);
-    u8g2.print("シール[");
+    u8g2.setCursor(0, 44);
+    u8g2.print("シールID");
 
     u8g2.setFont(u8g2_font_5x8_tf);
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
     char firstIdLine[19];
     snprintf(firstIdLine, sizeof(firstIdLine), "%.18s", id);
-    display.setCursor(0, 41);
+    display.setCursor(0, 53);
     display.print(firstIdLine);
     bool hasSecondIdLine = id[strlen(firstIdLine)] != '\0';
     if (hasSecondIdLine) {
-        display.setCursor(0, 50);
+        display.setCursor(0, 61);
         display.print(id + strlen(firstIdLine));
     }
 
-    u8g2.setFont(u8g2_font_unifont_t_japanese1);
-    u8g2.setCursor(0, hasSecondIdLine ? 61 : 53);
-    u8g2.print("]ゲット！");
+    (void)hasSecondIdLine;
     display.display();
     xSemaphoreGive(lcdMutex);
 }

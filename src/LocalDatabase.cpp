@@ -10,7 +10,7 @@
 namespace {
 constexpr char PREFERENCES_NAMESPACE[] = "events";
 constexpr char BOOT_ID_KEY[] = "boot";
-constexpr uint8_t SCHEMA_VERSION = 2;
+constexpr uint8_t SCHEMA_VERSION = 3;
 constexpr size_t MAX_PENDING_EVENTS = 32;
 constexpr UBaseType_t EVENT_QUEUE_LENGTH = 8;
 constexpr uint32_t STORAGE_RETRY_INTERVAL_MS = 5000;
@@ -44,6 +44,7 @@ bool isValidEvent(const LocalEvent& event) {
            event.eventId[sizeof(event.eventId) - 1] == '\0' &&
            event.originDeviceId[sizeof(event.originDeviceId) - 1] == '\0' &&
            event.partnerDeviceId[sizeof(event.partnerDeviceId) - 1] == '\0' &&
+           event.partnerName[sizeof(event.partnerName) - 1] == '\0' &&
            event.bootId[sizeof(event.bootId) - 1] == '\0' &&
            event.stickerId[sizeof(event.stickerId) - 1] == '\0' &&
            event.sentStickerId[sizeof(event.sentStickerId) - 1] == '\0' &&
@@ -54,11 +55,12 @@ bool isValidEvent(const LocalEvent& event) {
 bool readSlot(Preferences& preferences, size_t index, LocalEvent& event) {
     char key[4];
     slotKey(index, key, sizeof(key));
-    if (!preferences.isKey(key) ||
-        preferences.getBytesLength(key) != sizeof(event)) {
+    if (!preferences.isKey(key)) {
         return false;
     }
-    return preferences.getBytes(key, &event, sizeof(event)) == sizeof(event) &&
+
+    return preferences.getBytesLength(key) == sizeof(event) &&
+           preferences.getBytes(key, &event, sizeof(event)) == sizeof(event) &&
            isValidEvent(event);
 }
 
@@ -236,6 +238,7 @@ bool initializeLocalDatabase() {
 }
 
 bool queueEncounterEvent(const char* partnerDeviceId,
+                         const char* partnerName,
                          bool partnerIsGateway,
                          const char* stickerId) {
     if (!databaseReady || !partnerDeviceId) {
@@ -247,6 +250,8 @@ bool queueEncounterEvent(const char* partnerDeviceId,
     event.partnerIsGateway = partnerIsGateway ? 1 : 0;
     snprintf(event.stickerId, sizeof(event.stickerId), "%s",
              stickerId ? stickerId : "");
+    snprintf(event.partnerName, sizeof(event.partnerName), "%s",
+             partnerName ? partnerName : "");
     event.checksum = calculateChecksum(event);
 
     if (xQueueSend(eventQueue, &event, 0) != pdTRUE) {
@@ -286,6 +291,7 @@ bool saveSosSentEvent() {
 }
 
 bool queueTradeCompleteEvent(const char* peerDeviceId,
+                             const char* peerName,
                              const char* sentStickerId,
                              const char* receivedStickerId) {
     if (!databaseReady || !peerDeviceId || !sentStickerId ||
@@ -295,6 +301,8 @@ bool queueTradeCompleteEvent(const char* peerDeviceId,
     }
     LocalEvent event = makeEvent(
         LOCAL_EVENT_TRADE_COMPLETE, getDeviceId(), peerDeviceId);
+    snprintf(event.partnerName, sizeof(event.partnerName), "%s",
+             peerName ? peerName : "");
     snprintf(event.sentStickerId, sizeof(event.sentStickerId), "%s",
              sentStickerId);
     snprintf(event.receivedStickerId, sizeof(event.receivedStickerId), "%s",

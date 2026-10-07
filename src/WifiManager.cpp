@@ -8,8 +8,8 @@
 
 #define ESP_NOW_FALLBACK_CHANNEL 1
 
-#ifndef WIFI_
-#define WIFI_ ""
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
 #endif
 
 #ifndef WIFI_PASSWORD
@@ -45,7 +45,7 @@ bool setupWifi(unsigned long timeoutMs) {
     setEspNowFallbackChannel();
     return false;
 #else
-    if (strlen(WIFI_) == 0) {
+    if (strlen(WIFI_SSID) == 0) {
         Serial.println("Wi-Fi credentials are not configured");
         WiFi.persistent(false);
         WiFi.mode(WIFI_STA);
@@ -57,10 +57,10 @@ bool setupWifi(unsigned long timeoutMs) {
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
-    WiFi.begin(WIFI_, WIFI_PASSWORD);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     lastConnectionAttempt = millis();
 
-    Serial.printf("Connecting to Wi-Fi: %s\n", WIFI_);
+    Serial.printf("Connecting to Wi-Fi: %s\n", WIFI_SSID);
     unsigned long startTime = millis();
     while (WiFi.status() != WL_CONNECTED &&
            millis() - startTime < timeoutMs) {
@@ -114,12 +114,12 @@ void maintainWifiConnection(unsigned long retryIntervalMs) {
     }
     lastConnectionAttempt = currentMillis;
 
-    if (strlen(WIFI_) == 0) {
+    if (strlen(WIFI_SSID) == 0) {
         return;
     }
 
     Serial.println("Wi-Fi disconnected; retrying connection");
-    WiFi.begin(WIFI_, WIFI_PASSWORD);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 #endif
 }
 

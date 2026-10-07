@@ -20,6 +20,7 @@ struct LocalEvent {
     char eventId[37];
     char originDeviceId[37];
     char partnerDeviceId[37];
+    char partnerName[20];
     char stickerId[16];
     char sentStickerId[37];
     char receivedStickerId[37];
@@ -28,6 +29,7 @@ struct LocalEvent {
 
 bool initializeLocalDatabase();
 bool queueEncounterEvent(const char* partnerDeviceId,
+                        const char* partnerName,
                         bool partnerIsGateway,
                         const char* stickerId);
 bool queueSosEvent(LocalEventType type,
@@ -35,6 +37,7 @@ bool queueSosEvent(LocalEventType type,
                    const char* partnerDeviceId);
 bool saveSosSentEvent();
 bool queueTradeCompleteEvent(const char* peerDeviceId,
+                             const char* peerName,
                              const char* sentStickerId,
                              const char* receivedStickerId);
 void processQueuedLocalEvents();

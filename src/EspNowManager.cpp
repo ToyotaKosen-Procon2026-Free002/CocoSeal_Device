@@ -9,6 +9,8 @@
 #define ENCOUNTER_HISTORY_SIZE 10
 #define MESSAGE_TYPE_ENCOUNTER 0
 #define MESSAGE_TYPE_SOS 1
+#define MESSAGE_TYPE_NAME_ANNOUNCEMENT 2
+#define PEER_NAME_CACHE_SIZE 10
 
 namespace {
 struct EncounterHistory {
@@ -17,8 +19,84 @@ struct EncounterHistory {
     bool occupied;
 };
 
+struct PeerName {
+    char deviceId[37];
+    char name[20];
+};
+
 EncounterHistory recentHistory[ENCOUNTER_HISTORY_SIZE] = {};
+PeerName peerNames[PEER_NAME_CACHE_SIZE] = {};
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+char localDeviceName[20] = "";
+bool localDeviceNameAvailable = false;
+
+size_t utf8PrefixLength(const char* text, size_t capacity) {
+    if (!text || capacity == 0) {
+        return 0;
+    }
+    size_t length = strnlen(text, capacity);
+    if (length < capacity) {
+        return length;
+    }
+
+    size_t prefixLength = capacity - 1;
+    while (prefixLength > 0 &&
+           (static_cast<uint8_t>(text[prefixLength]) & 0xC0) == 0x80) {
+        --prefixLength;
+    }
+    uint8_t lead = static_cast<uint8_t>(text[prefixLength]);
+    size_t codePointLength = lead < 0x80 ? 1 :
+                             (lead & 0xE0) == 0xC0 ? 2 :
+                             (lead & 0xF0) == 0xE0 ? 3 :
+                             (lead & 0xF8) == 0xF0 ? 4 : 1;
+    return prefixLength + codePointLength <= capacity - 1
+               ? prefixLength + codePointLength
+               : prefixLength;
+}
+
+void copyUtf8(char* destination, size_t capacity, const char* source) {
+    if (!destination || capacity == 0) {
+        return;
+    }
+    destination[0] = '\0';
+    if (!source || !source[0]) {
+        return;
+    }
+    size_t length = utf8PrefixLength(source, capacity);
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
+void rememberPeerName(const char* deviceId, const char* name) {
+    if (!deviceId || !deviceId[0] || !name || !name[0]) {
+        return;
+    }
+
+    PeerName* slot = nullptr;
+    for (PeerName& peer : peerNames) {
+        if (strcmp(peer.deviceId, deviceId) == 0) {
+            slot = &peer;
+            break;
+        }
+        if (!slot && !peer.deviceId[0]) {
+            slot = &peer;
+        }
+    }
+    if (!slot) {
+        slot = &peerNames[0];
+    }
+    snprintf(slot->deviceId, sizeof(slot->deviceId), "%s", deviceId);
+    copyUtf8(slot->name, sizeof(slot->name), name);
+}
+
+const char* findPeerName(const char* deviceId) {
+    for (const PeerName& peer : peerNames) {
+        if (peer.deviceId[0] && strcmp(peer.deviceId, deviceId) == 0) {
+            return peer.name;
+        }
+    }
+    return "";
+}
 
 bool isInCooldown(const uint8_t *macAddr, unsigned long now) {
     for (const EncounterHistory& history : recentHistory) {
@@ -69,12 +147,29 @@ CommunicationPacket makePacket(int type) {
 
 bool sendPacket(const CommunicationPacket& packet) {
     esp_err_t result = esp_now_send(
-        broadcastAddress,
-        reinterpret_cast<const uint8_t *>(&packet),
+        broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
         sizeof(packet));
     if (result != ESP_OK) {
         Serial.printf("ESP-NOW send failed: %d\n", result);
         setEspNowStatus(ESP_NOW_SEND_FAILED);
+        return false;
+    }
+    return true;
+}
+
+bool sendNameAnnouncement() {
+    if (!localDeviceNameAvailable) {
+        return false;
+    }
+    NameAnnouncementPacket packet = {};
+    snprintf(packet.device_id, sizeof(packet.device_id), "%s", getDeviceId());
+    packet.type = MESSAGE_TYPE_NAME_ANNOUNCEMENT;
+    snprintf(packet.name, sizeof(packet.name), "%s", localDeviceName);
+    esp_err_t result = esp_now_send(
+        broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
+        sizeof(packet));
+    if (result != ESP_OK) {
+        Serial.printf("ESP-NOW name announcement failed: %d\n", result);
         return false;
     }
     return true;
@@ -88,6 +183,22 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     if (dataLen != sizeof(CommunicationPacket)) {
         Serial.printf("Ignoring unknown ESP-NOW packet: %d bytes\n",
                       dataLen);
+        return;
+    }
+
+    int messageType = -1;
+    memcpy(&messageType, data + offsetof(CommunicationPacket, type),
+           sizeof(messageType));
+    if (messageType == MESSAGE_TYPE_NAME_ANNOUNCEMENT) {
+        NameAnnouncementPacket namePacket = {};
+        memcpy(&namePacket, data, sizeof(namePacket));
+        namePacket.device_id[sizeof(namePacket.device_id) - 1] = '\0';
+        namePacket.name[sizeof(namePacket.name) - 1] = '\0';
+        if (namePacket.device_id[0] && namePacket.name[0]) {
+            rememberPeerName(namePacket.device_id, namePacket.name);
+            Serial.printf("ESP-NOW peer name received: %s\n",
+                          namePacket.name);
+        }
         return;
     }
 
@@ -120,7 +231,8 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     }
     recordEncounter(macAddr, now);
 
-    if (!queueEncounterEvent(packet.device_id, packet.isGateway,
+    if (!queueEncounterEvent(packet.device_id, findPeerName(packet.device_id),
+                             packet.isGateway,
                              packet.stickerId)) {
         Serial.println("Warning: encounter is not queued locally");
     }
@@ -132,6 +244,8 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
              packet.stickerId);
     snprintf(displayPeerDeviceId, sizeof(displayPeerDeviceId), "%s",
              packet.device_id[0] ? packet.device_id : "unknown");
+    copyUtf8(displayPeerName, sizeof(displayPeerName),
+             findPeerName(packet.device_id));
     lastEncounterWasParent = packet.isGateway;
     // The parent packet does not contain a rarity field.
     isRareSticker = false;
@@ -155,6 +269,7 @@ volatile bool encounterFlag = false;
 volatile bool sosReceivedEspNow = false;
 char displayStickerId[16] = "";
 char displayPeerDeviceId[37] = "";
+char displayPeerName[20] = "";
 bool getSticker = false;
 bool isRareSticker = false;
 volatile bool lastEncounterWasParent = false;
@@ -162,6 +277,20 @@ volatile EspNowStatus espNowStatus = ESP_NOW_WAITING;
 
 void setEspNowStatus(EspNowStatus status) {
     espNowStatus = status;
+}
+
+void setLocalDeviceName(const char* name) {
+    if (!name || !name[0]) {
+        Serial.println("ESP-NOW warning: ignored empty local device name");
+        return;
+    }
+    copyUtf8(localDeviceName, sizeof(localDeviceName), name);
+    localDeviceNameAvailable = true;
+    Serial.printf("ESP-NOW local name updated: %s\n", localDeviceName);
+}
+
+const char* getPeerDeviceName(const char* deviceId) {
+    return findPeerName(deviceId);
 }
 
 void setupEspNow() {
@@ -196,12 +325,14 @@ void setupEspNow() {
 }
 
 void sendEncounterAnnouncement() {
+    sendNameAnnouncement();
     CommunicationPacket packet = makePacket(MESSAGE_TYPE_ENCOUNTER);
     setEspNowStatus(ESP_NOW_SENDING);
     sendPacket(packet);
 }
 
 void sendSosNotification() {
+    sendNameAnnouncement();
     CommunicationPacket packet = makePacket(MESSAGE_TYPE_SOS);
     sendPacket(packet);
 }

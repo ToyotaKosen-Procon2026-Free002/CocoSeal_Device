@@ -1,6 +1,7 @@
 #include "TradeProtocol.h"
 
 #include "DeviceIdentity.h"
+#include "EspNowManager.h"
 #include "LocalDatabase.h"
 #include "SealInventory.h"
 
@@ -524,6 +525,7 @@ void handleCommit(const QueuedPacket& queued) {
         return;
     }
     if (!queueTradeCompleteEvent(packet.senderDeviceId,
+                                 getPeerDeviceName(packet.senderDeviceId),
                                  pendingTrade.localSealId,
                                  pendingTrade.peerSealId)) {
         Serial.println("Trade warning: completed trade was not queued for sync");
@@ -558,6 +560,7 @@ void handleAck(const QueuedPacket& queued) {
         return;
     }
     if (!queueTradeCompleteEvent(packet.senderDeviceId,
+                                 getPeerDeviceName(packet.senderDeviceId),
                                  pendingTrade.localSealId,
                                  pendingTrade.peerSealId)) {
         Serial.println("Trade warning: completed trade was not queued for sync");

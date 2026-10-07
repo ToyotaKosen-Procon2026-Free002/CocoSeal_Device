@@ -1,6 +1,7 @@
 #include "ServerSync.h"
 
 #include "DeviceIdentity.h"
+#include "EspNowManager.h"
 #include "LocalDatabase.h"
 #include "SealInventory.h"
 #include "WifiManager.h"
@@ -37,6 +38,9 @@ enum SyncDiagnosticStage : uint32_t {
     SYNC_STAGE_FIND_EVENT,
     SYNC_STAGE_ACTIVATE_KEY,
     SYNC_STAGE_ACTIVATE_JSON,
+    SYNC_STAGE_DEVICE_PROFILE_GET,
+    SYNC_STAGE_DEVICE_PROFILE_REQUEST,
+    SYNC_STAGE_DEVICE_PROFILE_PARSE,
     SYNC_STAGE_TRADE_POOL_GET,
     SYNC_STAGE_TRADE_POOL_REQUEST,
     SYNC_STAGE_TRADE_POOL_PARSE,
@@ -87,9 +91,11 @@ constexpr char SERVER_ROOT_CA[] PROGMEM =
     "-----END CERTIFICATE-----\n";
 
 uint32_t lastSyncAttempt = 0;
+uint32_t lastDeviceProfileRefreshAttempt = 0;
 uint32_t lastTradePoolRefreshAttempt = 0;
 bool deviceActivated = false;
 bool syncScheduleInitialized = false;
+bool deviceProfileRefreshAttempted = false;
 bool tradePoolRefreshAttempted = false;
 
 const char* syncStageName(uint32_t stage) {
@@ -99,6 +105,9 @@ const char* syncStageName(uint32_t stage) {
         case SYNC_STAGE_FIND_EVENT: return "finding pending event";
         case SYNC_STAGE_ACTIVATE_KEY: return "reading activation public key";
         case SYNC_STAGE_ACTIVATE_JSON: return "building activation JSON";
+        case SYNC_STAGE_DEVICE_PROFILE_GET: return "fetching device profile";
+        case SYNC_STAGE_DEVICE_PROFILE_REQUEST: return "sending device-profile GET";
+        case SYNC_STAGE_DEVICE_PROFILE_PARSE: return "parsing device profile";
         case SYNC_STAGE_TRADE_POOL_GET: return "fetching server trade pool";
         case SYNC_STAGE_TRADE_POOL_REQUEST: return "sending trade-pool GET";
         case SYNC_STAGE_TRADE_POOL_PARSE: return "parsing server trade pool";
@@ -270,7 +279,6 @@ bool activateDevice() {
     JsonDocument request;
     request["device_id"] = getDeviceId();
     request["public_key"] = toHex(publicKey, publicKeyLength);
-    request["name"] = "CocoSeal Child";
 
     String requestBody;
     serializeJson(request, requestBody);
@@ -288,6 +296,72 @@ bool activateDevice() {
 
     deviceActivated = true;
     Serial.println("Server sync: device activation complete");
+    return true;
+}
+
+bool fetchDeviceProfile() {
+    setSyncDiagnosticStage(SYNC_STAGE_DEVICE_PROFILE_GET);
+    WiFiClientSecure client;
+    client.setCACert(SERVER_ROOT_CA);
+
+    HTTPClient http;
+    String url = String(SERVER_BASE_URL) + "/devices/device";
+    if (!http.begin(client, url)) {
+        Serial.println("Server sync error: failed to initialize device-profile HTTPS");
+        return false;
+    }
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.addHeader("X-Device-Id", getDeviceId());
+
+    uint8_t signature[MBEDTLS_ECDSA_MAX_LEN] = {};
+    size_t signatureLength = 0;
+    const char* deviceId = getDeviceId();
+    if (!signDeviceMessage(
+            reinterpret_cast<const uint8_t*>(deviceId), strlen(deviceId),
+            signature, sizeof(signature), signatureLength)) {
+        http.end();
+        Serial.println("Server sync error: failed to sign device-profile request");
+        return false;
+    }
+    http.addHeader("X-Device-Signature", toHex(signature, signatureLength));
+
+    setSyncDiagnosticStage(SYNC_STAGE_DEVICE_PROFILE_REQUEST);
+    int status = http.GET();
+    String responseBody;
+    setSyncDiagnosticStage(SYNC_STAGE_HTTP_RESPONSE);
+    if (status > 0) {
+        responseBody = http.getString();
+        Serial.printf("Server sync: GET /devices/device returned HTTP %d "
+                      "(%u response bytes)\n",
+                      status,
+                      static_cast<unsigned>(responseBody.length()));
+    } else {
+        Serial.printf("Server sync error: device-profile request failed (%s)\n",
+                      http.errorToString(status).c_str());
+        http.end();
+        return false;
+    }
+    http.end();
+
+    if (status != HTTP_CODE_OK) {
+        if (!responseBody.isEmpty()) {
+            Serial.println(responseBody);
+        }
+        return false;
+    }
+
+    setSyncDiagnosticStage(SYNC_STAGE_DEVICE_PROFILE_PARSE);
+    JsonDocument response;
+    DeserializationError error = deserializeJson(response, responseBody);
+    const char* name = response["name"].as<const char*>();
+    if (error || !response.is<JsonObject>() || !name || !name[0]) {
+        Serial.printf("Server sync error: invalid device-profile response (%s)\n",
+                      error ? error.c_str() : "missing name");
+        return false;
+    }
+
+    setLocalDeviceName(name);
+    Serial.printf("BOOT: own device name: %s\n", name);
     return true;
 }
 
@@ -472,6 +546,7 @@ bool syncEvent(LocalEvent& event, uint32_t currentTimestampUnix) {
     communication["event_id"] = eventId;
     communication["my_id"] = myId;
     communication["partner_id"] = partnerId;
+    communication["partner_name"] = event.partnerName;
     communication["partner_is_gateway"] = event.partnerIsGateway != 0;
     if (sendSealId.isEmpty()) {
         communication["send_seal_id"] = nullptr;
@@ -565,6 +640,13 @@ void processServerSync() {
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
+    }
+    if (!deviceProfileRefreshAttempted ||
+        nowMillis - lastDeviceProfileRefreshAttempt >=
+            TRADE_POOL_REFRESH_INTERVAL_MS) {
+        deviceProfileRefreshAttempted = true;
+        lastDeviceProfileRefreshAttempt = nowMillis;
+        fetchDeviceProfile();
     }
     if (!tradePoolRefreshAttempted ||
         nowMillis - lastTradePoolRefreshAttempt >=

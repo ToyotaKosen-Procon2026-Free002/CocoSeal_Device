@@ -5,6 +5,7 @@
 子機は`https://coco-seal.mydns.jp`に接続し、次のエンドポイントを使用します。
 
 - `POST /devices/activate`：デバイスUUIDとP-256公開鍵を登録します。
+- `GET /devices/device`：デバイス署名付きで自分のデバイス情報を取得し、登録表示名を無線で送信します。
 - `GET /devices/trading_seals`：子機署名付きでサーバー上の交換プールを取得します。レスポンスの各`seal_id`を端末の交換可能在庫へ反映します。
 - `POST /devices/status`：すれ違いまたは交換完了イベントを1件ずつ送信します。
 
@@ -12,7 +13,11 @@
 
 ファームウェアはイベントにECDSA P-256 / SHA-256署名を付けます。認証が必要なHTTPリクエストでは`X-Device-Id`と`X-Device-Signature`ヘッダーを使用します。後者は、`device_id`のUTF-8バイト列と**実際に送信するJSONリクエスト本文のバイト列**を連結したデータに対するDER形式の署名を、小文字の16進数にした値です。
 
-`GET /devices/trading_seals`にはJSON本文がないため、`X-Device-Signature`はデバイスIDのUTF-8バイト列だけを署名します。レスポンスの`DeviceSeal`配列に同じ`seal_id`が複数ある場合、その出現数を交換可能枚数として扱います。同期に成功したときだけローカルの交換プールをサーバー内容に置き換え、サーバーアクセスに失敗した場合は既存のローカル在庫を保持します。登録名はこの子機認証APIでは取得できません。現在の`GET /users/devices`はFirebase認証を必要とするため、ファームウェアから呼び出しません。
+`GET /devices/device`と`GET /devices/trading_seals`にはJSON本文がないため、`X-Device-Signature`はデバイスIDのUTF-8バイト列だけを署名します。`/devices/device`の`Device.name`を自身の無線名として使用します。レスポンスの`DeviceSeal`配列に同じ`seal_id`が複数ある場合、その出現数を交換可能枚数として扱います。同期に成功したときだけローカルの交換プールをサーバー内容に置き換え、サーバーアクセスに失敗した場合は既存のローカル在庫を保持します。
+
+## ESP-NOWデバイス名通知
+
+端末は従来の64バイト`CommunicationPacket`による遭遇・SOS通知を維持しつつ、名前通知では同じ64バイト長の別レイアウトを使用します。`device_id`はオフセット0、32-bit `type=2`はオフセット40、UTF-8名（最大19バイト＋終端NUL）はオフセット44です。遭遇またはSOS通知の直前に名前通知をブロードキャストします。受信側は送信元IDと名前を一時キャッシュし、遭遇表示で名前を使います。親機でも名前を送受信するには、親機ファームウェアにこの`type=2`パケットの送信・受信対応が必要です。
 
 `/devices/status`のイベント署名対象は、次のUTF-8文字列です。
 
@@ -21,14 +26,14 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
 ```
 
 `gateway_flag`は`1`または`0`です。シールIDがない場合、署名対象文字列では空文字列、JSONでは`null`を指定します。`timestamp_unix`はUTCのUNIX時刻（秒）です。JSONの`timestamp`は末尾に`Z`を付けたUTCのISO 8601形式です。
+`partner_name`には遭遇時に相手から受信した表示名を含めます。名前通知を受け取っていない既存イベントでは空文字列です。この値はイベント署名のcanonical文字列には含めず、実際のJSON本文を使うリクエスト署名には含めます。
 
-有効化リクエストの例（`public_key`の値は16進数130文字です）。
+有効化リクエストの例（`public_key`の値は16進数130文字です）。既存の登録名を上書きしないよう、ファームウェアは任意項目の`name`を送らず、`GET /devices/device`で取得した名前を無線通知に使用します。
 
 ```json
 {
   "device_id": "child-uuid",
-  "public_key": "04...",
-  "name": "ココシール子機"
+  "public_key": "04..."
 }
 ```
 
@@ -43,6 +48,7 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
     "event_id": "event-uuid",
     "my_id": "child-uuid",
     "partner_id": "peer-uuid",
+    "partner_name": "ココシール子機",
     "partner_is_gateway": false,
     "send_seal_id": null,
     "receive_seal_id": null,
