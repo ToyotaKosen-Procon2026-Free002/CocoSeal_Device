@@ -517,22 +517,24 @@ void loop() {
   processServerSync();
 #endif
   processTradeProtocol();
+  processEspNowDisplayEvents();
   static bool tradeDebugVisible = false;
-  static bool tradeDebugInProgress = false;
   static unsigned long tradeDebugHideAt = 0;
+  static bool tradeOutcomePending = false;
+  static unsigned long tradeOutcomeDisplayAt = 0;
+  static char pendingTradeOutcome[64] = {};
   char tradeStatus[64];
   bool currentTradeInProgress = false;
   if (takeTradeDebugStatus(tradeStatus, sizeof(tradeStatus),
                            currentTradeInProgress)) {
-    tradeDebugVisible = true;
-    tradeDebugInProgress = currentTradeInProgress;
-    tradeDebugHideAt = currentMillis + 5000;
-    if (!isAlarmActive) {
-      displayTradeDebugStatus(tradeStatus);
+    if (!currentTradeInProgress) {
+      snprintf(pendingTradeOutcome, sizeof(pendingTradeOutcome), "%s",
+               tradeStatus);
+      tradeOutcomePending = true;
+      tradeOutcomeDisplayAt = currentMillis + 1200;
     }
   }
-  if (tradeDebugVisible && !tradeDebugInProgress &&
-      currentMillis >= tradeDebugHideAt) {
+  if (tradeDebugVisible && currentMillis >= tradeDebugHideAt) {
     tradeDebugVisible = false;
     if (!isAlarmActive) {
       display.clearDisplay();
@@ -560,18 +562,12 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
-  static unsigned long tradeResultDisplayTime = 0;
-  static bool tradeResultVisible = false;
-  if (tradeResultVisible && currentMillis - tradeResultDisplayTime >= 5000) {
-    tradeResultVisible = false;
-  }
 
   // すれ違い結果の画面表示
   if (encounterFlag) {
-    encounterFlag = false;
-
     // SOS発動中でなければ表示する
-    if (!isAlarmActive && !tradeResultVisible && !tradeDebugVisible) {
+    if (!isAlarmActive && !tradeDebugVisible) {
+      encounterFlag = false;
       displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
                                               : ENCOUNTER_SOURCE_CHILD,
                        displayPeerName);
@@ -581,16 +577,14 @@ void loop() {
       needDisplayClear = true;
     }
   }
-
-  if (!isAlarmActive) {
-    char tradedSealId[37];
-    if (takeCompletedTradeReceivedSeal(tradedSealId, sizeof(tradedSealId))) {
-      displayTradeReceivedSeal(displayPeerName, tradedSealId);
-      tradeResultDisplayTime = currentMillis;
-      tradeResultVisible = true;
-      displayClearTime = currentMillis + 5000;
-      needDisplayClear = true;
-    }
+  if (tradeOutcomePending && currentMillis >= tradeOutcomeDisplayAt &&
+      !isAlarmActive) {
+    tradeOutcomePending = false;
+    tradeDebugVisible = true;
+    tradeDebugHideAt = currentMillis + 5000;
+    displayTradeDebugStatus(pendingTradeOutcome);
+    displayClearTime = currentMillis + 5000;
+    needDisplayClear = true;
   }
 
   // 定期的に自分のデータを周囲に送信

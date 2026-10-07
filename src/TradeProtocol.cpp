@@ -26,7 +26,14 @@ enum class TradeMessageType : uint8_t {
     ACCEPT = 2,
     COMMIT = 3,
     ACK = 4,
-    REJECT = 5
+    REJECT = 5,
+    ENCOUNTER_DISPLAY = 6,
+    TRADE_RESULT = 7
+};
+
+enum class TradeResult : uint16_t {
+    SUCCESS = 0,
+    FAILURE = 1
 };
 
 enum class TradeRole : uint8_t {
@@ -89,7 +96,6 @@ bool hasPendingTrade = false;
 bool protocolReady = false;
 uint32_t lastSendTime = 0;
 const char* initializationError = "";
-char completedTradeReceivedSealId[37] = {};
 char tradeDebugStatus[64] = {};
 bool tradeDebugStatusChanged = false;
 bool tradeInProgress = false;
@@ -98,6 +104,20 @@ void setTradeDebugStatus(const char* status, bool inProgress) {
     snprintf(tradeDebugStatus, sizeof(tradeDebugStatus), "%s", status);
     tradeInProgress = inProgress;
     tradeDebugStatusChanged = true;
+}
+
+void generateUuid(char* output, size_t capacity) {
+    uint8_t bytes[16];
+    esp_fill_random(bytes, sizeof(bytes));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    snprintf(output, capacity,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+             "%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11],
+             bytes[12], bytes[13], bytes[14], bytes[15]);
 }
 
 uint32_t calculateCrc(const uint8_t* bytes, size_t length) {
@@ -145,7 +165,7 @@ bool validPacket(const TradePacket& packet) {
     if (packet.magic != PACKET_MAGIC ||
         packet.version != PROTOCOL_VERSION ||
         packet.messageType < TradeMessageType::OFFER ||
-        packet.messageType > TradeMessageType::REJECT ||
+        packet.messageType > TradeMessageType::TRADE_RESULT ||
         !validUuid(packet.transactionId) ||
         !validUuid(packet.senderDeviceId) ||
         !validUuid(packet.targetDeviceId) ||
@@ -154,6 +174,16 @@ bool validPacket(const TradePacket& packet) {
     }
     if (packet.messageType == TradeMessageType::OFFER) {
         return validIdentifier(packet.initiatorSealId) &&
+               packet.responderSealId[0] == '\0';
+    }
+    if (packet.messageType == TradeMessageType::ENCOUNTER_DISPLAY) {
+        return packet.initiatorSealId[0] == '\0' &&
+               packet.responderSealId[0] == '\0';
+    }
+    if (packet.messageType == TradeMessageType::TRADE_RESULT) {
+        return packet.reserved <=
+                   static_cast<uint16_t>(TradeResult::FAILURE) &&
+               packet.initiatorSealId[0] == '\0' &&
                packet.responderSealId[0] == '\0';
     }
     return validIdentifier(packet.initiatorSealId) &&
@@ -306,6 +336,47 @@ bool sendPacketToPeer(const TradePacket& packet, const uint8_t* peerMac) {
     return true;
 }
 
+void sendEncounterDisplay(const QueuedEncounter& encounter) {
+    char encounterId[37];
+    generateUuid(encounterId, sizeof(encounterId));
+    TradePacket packet = makePacket(
+        TradeMessageType::ENCOUNTER_DISPLAY, encounterId,
+        encounter.peerDeviceId, nullptr, nullptr);
+    if (sendPacketToPeer(packet, encounter.peerMac)) {
+        scheduleSynchronizedEncounterDisplay(encounter.peerDeviceId);
+    }
+}
+
+void sendTradeOutcome(const uint8_t* peerMac,
+                      const char* peerDeviceId,
+                      const char* transactionId,
+                      TradeResult result) {
+    if (!peerMac || !validUuid(peerDeviceId)) {
+        return;
+    }
+    char generatedTransactionId[37];
+    if (!validUuid(transactionId)) {
+        generateUuid(generatedTransactionId, sizeof(generatedTransactionId));
+        transactionId = generatedTransactionId;
+    }
+    TradePacket packet = makePacket(
+        TradeMessageType::TRADE_RESULT, transactionId, peerDeviceId,
+        nullptr, nullptr);
+    packet.reserved = static_cast<uint16_t>(result);
+    packet.checksum = packetChecksum(packet);
+    sendPacketToPeer(packet, peerMac);
+}
+
+void reportTradeOutcome(const uint8_t* peerMac,
+                        const char* peerDeviceId,
+                        const char* transactionId,
+                        bool succeeded) {
+    sendTradeOutcome(peerMac, peerDeviceId, transactionId,
+                     succeeded ? TradeResult::SUCCESS : TradeResult::FAILURE);
+    setTradeDebugStatus(succeeded ? "COMPLETE: TRADE" : "TRADE_FAILED",
+                        false);
+}
+
 bool sendPendingMessage() {
     if (!hasPendingTrade) {
         return false;
@@ -353,11 +424,14 @@ void sendReject(const TradePacket& received, const uint8_t* peerMac) {
 }
 
 bool beginTrade(const QueuedEncounter& encounter) {
+    sendEncounterDisplay(encounter);
+
     char localSealId[37] = {};
     if (!getFirstTradeableSeal(nullptr, localSealId, sizeof(localSealId))) {
         Serial.printf("Trade not started with %s: no tradeable seal in pool\n",
                       encounter.peerDeviceId);
-        setTradeDebugStatus("NO TRADEABLE SEAL", false);
+        reportTradeOutcome(encounter.peerMac, encounter.peerDeviceId,
+                           nullptr, false);
         return false;
     }
 
@@ -383,7 +457,8 @@ bool beginTrade(const QueuedEncounter& encounter) {
              uuidBytes[12], uuidBytes[13], uuidBytes[14], uuidBytes[15]);
     pendingTrade = candidate;
     if (!savePendingTrade()) {
-        setTradeDebugStatus("NVS SAVE FAILED", false);
+        reportTradeOutcome(encounter.peerMac, encounter.peerDeviceId,
+                           candidate.transactionId, false);
         return false;
     }
     Serial.printf("Trade started with %s, offering %s\n",
@@ -423,7 +498,8 @@ void handleOffer(const QueuedPacket& queued) {
                                localSealId, sizeof(localSealId))) {
         Serial.printf("Trade declined: no eligible seal for %s\n",
                       packet.senderDeviceId);
-        setTradeDebugStatus("NO ELIGIBLE SEAL", false);
+        reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                           packet.transactionId, false);
         return;
     }
 
@@ -441,7 +517,9 @@ void handleOffer(const QueuedPacket& queued) {
     snprintf(pendingTrade.localSealId, sizeof(pendingTrade.localSealId),
              "%s", localSealId);
     if (!savePendingTrade()) {
-        setTradeDebugStatus("NVS SAVE FAILED", false);
+        reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                           packet.transactionId, false);
+        clearPendingTrade();
         return;
     }
     setTradeDebugStatus("OFFER RECEIVED; PREPARING", true);
@@ -482,7 +560,9 @@ void handleAccept(const QueuedPacket& queued) {
             setTradeDebugStatus("COMMIT SEND FAILED", true);
         }
     } else {
-        setTradeDebugStatus("NVS SAVE FAILED", true);
+        reportTradeOutcome(queued.peerMac, queued.packet.senderDeviceId,
+                           queued.packet.transactionId, false);
+        clearPendingTrade();
     }
 }
 
@@ -510,18 +590,19 @@ void handleCommit(const QueuedPacket& queued) {
         Serial.printf("Trade commit rejected: %s (txn %s, peer %s)\n",
                       rejectionReason, packet.transactionId,
                       packet.senderDeviceId);
-        char status[64];
-        snprintf(status, sizeof(status), "REJECTED: %.44s", rejectionReason);
-        setTradeDebugStatus(status, false);
+        reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                           packet.transactionId, false);
         sendReject(packet, queued.peerMac);
         return;
     }
 
-    setTradeDebugStatus("COMMIT RECEIVED", true);
     if (!applyTradeOnce(packet.transactionId,
                         pendingTrade.localSealId,
                         pendingTrade.peerSealId)) {
-        setTradeDebugStatus("INVENTORY APPLY FAILED", false);
+        reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                           packet.transactionId, false);
+        sendReject(packet, queued.peerMac);
+        clearPendingTrade();
         return;
     }
     if (!queueTradeCompleteEvent(packet.senderDeviceId,
@@ -530,13 +611,7 @@ void handleCommit(const QueuedPacket& queued) {
                                  pendingTrade.peerSealId)) {
         Serial.println("Trade warning: completed trade was not queued for sync");
     }
-    snprintf(completedTradeReceivedSealId,
-             sizeof(completedTradeReceivedSealId), "%s",
-             pendingTrade.peerSealId);
-    char status[64];
-    snprintf(status, sizeof(status), "COMPLETE: %.47s",
-             pendingTrade.peerSealId);
-    setTradeDebugStatus(status, false);
+    setTradeDebugStatus("COMPLETE: TRADE", false);
     clearPendingTrade();
     Serial.printf("Trade completed with %s\n", packet.senderDeviceId);
     sendAck(packet, queued.peerMac);
@@ -556,7 +631,9 @@ void handleAck(const QueuedPacket& queued) {
     if (!applyTradeOnce(packet.transactionId,
                         pendingTrade.localSealId,
                         pendingTrade.peerSealId)) {
-        setTradeDebugStatus("INVENTORY APPLY FAILED", false);
+        reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                           packet.transactionId, false);
+        clearPendingTrade();
         return;
     }
     if (!queueTradeCompleteEvent(packet.senderDeviceId,
@@ -565,13 +642,8 @@ void handleAck(const QueuedPacket& queued) {
                                  pendingTrade.peerSealId)) {
         Serial.println("Trade warning: completed trade was not queued for sync");
     }
-    snprintf(completedTradeReceivedSealId,
-             sizeof(completedTradeReceivedSealId), "%s",
-             pendingTrade.peerSealId);
-    char status[64];
-    snprintf(status, sizeof(status), "COMPLETE: %.47s",
-             pendingTrade.peerSealId);
-    setTradeDebugStatus(status, false);
+    reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                       packet.transactionId, true);
     clearPendingTrade();
     Serial.printf("Trade completed with %s\n", packet.senderDeviceId);
 }
@@ -587,8 +659,30 @@ void handleReject(const QueuedPacket& queued) {
         return;
     }
     Serial.printf("Trade rejected by %s\n", packet.senderDeviceId);
-    setTradeDebugStatus("REJECTED BY PEER", false);
+    reportTradeOutcome(queued.peerMac, packet.senderDeviceId,
+                       packet.transactionId, false);
     clearPendingTrade();
+}
+
+void handleEncounterDisplay(const QueuedPacket& queued) {
+    scheduleSynchronizedEncounterDisplay(queued.packet.senderDeviceId);
+}
+
+void handleTradeResult(const QueuedPacket& queued) {
+    const TradePacket& packet = queued.packet;
+    if (hasPendingTrade &&
+        (!sameTransaction(packet, queued.peerMac) ||
+         strcmp(packet.targetDeviceId, getDeviceId()) != 0)) {
+        return;
+    }
+
+    bool succeeded = packet.reserved ==
+                     static_cast<uint16_t>(TradeResult::SUCCESS);
+    setTradeDebugStatus(succeeded ? "COMPLETE: TRADE" : "TRADE_FAILED",
+                        false);
+    if (hasPendingTrade) {
+        clearPendingTrade();
+    }
 }
 
 void handlePacket(const QueuedPacket& queued) {
@@ -615,6 +709,12 @@ void handlePacket(const QueuedPacket& queued) {
         case TradeMessageType::REJECT:
             handleReject(queued);
             break;
+        case TradeMessageType::ENCOUNTER_DISPLAY:
+            handleEncounterDisplay(queued);
+            break;
+        case TradeMessageType::TRADE_RESULT:
+            handleTradeResult(queued);
+            break;
     }
 }
 }
@@ -639,16 +739,6 @@ bool initializeTradeProtocol() {
     }
     if (!loadPendingTrade()) {
         return false;
-    }
-    if (hasPendingTrade &&
-        pendingTrade.phase != TradePhase::WAITING_FOR_ACK &&
-        (pendingTrade.startedUptime > millis() ||
-         millis() - pendingTrade.startedUptime >= PRE_COMMIT_TIMEOUT_MS)) {
-        Serial.println("Trade protocol: expired pre-commit transaction discarded");
-        if (!clearPendingTrade()) {
-            initializationError = "NVS CLEAR";
-            return false;
-        }
     }
     protocolReady = true;
     initializationError = "";
@@ -683,15 +773,6 @@ bool takeTradeDebugStatus(char* status,
     return true;
 }
 
-bool takeCompletedTradeReceivedSeal(char* sealId, size_t capacity) {
-    if (!sealId || capacity == 0 || !completedTradeReceivedSealId[0]) {
-        return false;
-    }
-    snprintf(sealId, capacity, "%s", completedTradeReceivedSealId);
-    completedTradeReceivedSealId[0] = '\0';
-    return true;
-}
-
 void notifyTradePeerEncounter(const uint8_t* peerMac,
                               const char* peerDeviceId) {
     if (!protocolReady || !peerMac || !validUuid(peerDeviceId) ||
@@ -723,6 +804,14 @@ bool receiveTradeProtocolPacket(const uint8_t* peerMac,
         return true;
     }
 
+    if (validPacket(packet) &&
+        packet.messageType == TradeMessageType::ENCOUNTER_DISPLAY &&
+        strcmp(packet.targetDeviceId, getDeviceId()) == 0 &&
+        strcmp(packet.senderDeviceId, getDeviceId()) != 0) {
+        scheduleSynchronizedEncounterDisplay(packet.senderDeviceId);
+        return true;
+    }
+
     QueuedPacket queued = {};
     memcpy(queued.peerMac, peerMac, sizeof(queued.peerMac));
     queued.packet = packet;
@@ -750,15 +839,16 @@ void processTradeProtocol() {
     }
 
     if (hasPendingTrade &&
-        static_cast<uint32_t>(millis() - lastSendTime) >= RETRY_INTERVAL_MS) {
-        sendPendingMessage();
-    }
-    if (hasPendingTrade &&
-        pendingTrade.phase != TradePhase::WAITING_FOR_ACK &&
         (pendingTrade.startedUptime > millis() ||
          millis() - pendingTrade.startedUptime >= PRE_COMMIT_TIMEOUT_MS)) {
-        Serial.println("Trade protocol: pre-commit transaction timed out");
-        setTradeDebugStatus("TIMEOUT", false);
+        Serial.println("Trade protocol: transaction timed out");
+        reportTradeOutcome(pendingTrade.peerMac, pendingTrade.peerDeviceId,
+                           pendingTrade.transactionId, false);
         clearPendingTrade();
+        return;
+    }
+    if (hasPendingTrade &&
+        static_cast<uint32_t>(millis() - lastSendTime) >= RETRY_INTERVAL_MS) {
+        sendPendingMessage();
     }
 }

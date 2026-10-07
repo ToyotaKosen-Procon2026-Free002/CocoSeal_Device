@@ -55,6 +55,8 @@ extern volatile bool lastEncounterWasParent;
 void setupEspNow();
 void setLocalDeviceName(const char* name);
 const char* getPeerDeviceName(const char* deviceId);
+void scheduleSynchronizedEncounterDisplay(const char* peerDeviceId);
+void processEspNowDisplayEvents();
 void sendEncounterAnnouncement();
 void sendSosNotification();
 void setEspNowStatus(EspNowStatus status);

@@ -11,6 +11,7 @@
 #define MESSAGE_TYPE_SOS 1
 #define MESSAGE_TYPE_NAME_ANNOUNCEMENT 2
 #define PEER_NAME_CACHE_SIZE 10
+#define SYNCHRONIZED_DISPLAY_DELAY_MS 300
 
 namespace {
 struct EncounterHistory {
@@ -29,6 +30,9 @@ PeerName peerNames[PEER_NAME_CACHE_SIZE] = {};
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 char localDeviceName[20] = "";
 bool localDeviceNameAvailable = false;
+char scheduledPeerDeviceId[37] = "";
+uint32_t synchronizedDisplayAt = 0;
+bool synchronizedDisplayPending = false;
 
 size_t utf8PrefixLength(const char* text, size_t capacity) {
     if (!text || capacity == 0) {
@@ -250,7 +254,9 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     // The parent packet does not contain a rarity field.
     isRareSticker = false;
     setEspNowStatus(ESP_NOW_ESTABLISHED);
-    encounterFlag = true;
+    if (packet.isGateway) {
+        encounterFlag = true;
+    }
 
     Serial.printf("Encounter from %s (%s), sticker: %s\n",
                   packet.device_id,
@@ -291,6 +297,30 @@ void setLocalDeviceName(const char* name) {
 
 const char* getPeerDeviceName(const char* deviceId) {
     return findPeerName(deviceId);
+}
+
+void scheduleSynchronizedEncounterDisplay(const char* peerDeviceId) {
+    if (!peerDeviceId || !peerDeviceId[0]) {
+        return;
+    }
+    snprintf(scheduledPeerDeviceId, sizeof(scheduledPeerDeviceId), "%s",
+             peerDeviceId);
+    synchronizedDisplayAt = millis() + SYNCHRONIZED_DISPLAY_DELAY_MS;
+    synchronizedDisplayPending = true;
+}
+
+void processEspNowDisplayEvents() {
+    if (!synchronizedDisplayPending ||
+        static_cast<int32_t>(millis() - synchronizedDisplayAt) < 0) {
+        return;
+    }
+    synchronizedDisplayPending = false;
+    snprintf(displayPeerDeviceId, sizeof(displayPeerDeviceId), "%s",
+             scheduledPeerDeviceId);
+    copyUtf8(displayPeerName, sizeof(displayPeerName),
+             findPeerName(scheduledPeerDeviceId));
+    lastEncounterWasParent = false;
+    encounterFlag = true;
 }
 
 void setupEspNow() {

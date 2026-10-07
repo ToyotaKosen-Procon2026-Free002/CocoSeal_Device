@@ -106,9 +106,10 @@ void displayEncounter(EncounterSource source, const char* peerName) {
     const char* name = peerName && peerName[0] ? peerName : "ID";
     if (source == ENCOUNTER_SOURCE_PARENT) {
         const char* lines[] = {
-            name,
-            "とすれちがい",
-            "シールゲット！"
+            "こうばん",
+            "をとおったよ",
+            "オリジナルシール",
+            "ゲット！"
         };
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     } else {
@@ -117,52 +118,25 @@ void displayEncounter(EncounterSource source, const char* peerName) {
     }
 }
 
-void displayTradeReceivedSeal(const char* peerName, const char* stickerId) {
-    const char* id = stickerId && stickerId[0] ? stickerId : "unknown";
-    const char* name = peerName && peerName[0] ? peerName : "ID";
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
-        return;
-    }
-
-    beginJapaneseScreen();
-    u8g2.setCursor(0, 12);
-    u8g2.print(name);
-    u8g2.setCursor(0, 28);
-    u8g2.print("とすれちがい");
-
-    u8g2.setCursor(0, 44);
-    u8g2.print("シールID");
-
-    u8g2.setFont(u8g2_font_5x8_tf);
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    char firstIdLine[19];
-    snprintf(firstIdLine, sizeof(firstIdLine), "%.18s", id);
-    display.setCursor(0, 53);
-    display.print(firstIdLine);
-    bool hasSecondIdLine = id[strlen(firstIdLine)] != '\0';
-    if (hasSecondIdLine) {
-        display.setCursor(0, 61);
-        display.print(id + strlen(firstIdLine));
-    }
-
-    (void)hasSecondIdLine;
-    display.display();
-    xSemaphoreGive(lcdMutex);
-}
-
 void displayTradeDebugStatus(const char* status) {
     const char* message = status && status[0] ? status : "UNKNOWN";
+    bool tradeSucceeded = strncmp(message, "COMPLETE:", 9) == 0;
+    bool tradeFailed = strcmp(message, "TRADE_FAILED") == 0;
     if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
         return;
     }
 
-    if (strcmp(message, "NO TRADEABLE SEAL") == 0) {
+    if (tradeSucceeded || tradeFailed) {
         beginJapaneseScreen();
-        u8g2.setCursor(0, 16);
-        u8g2.print("こうかんにだす");
-        u8g2.setCursor(0, 40);
-        u8g2.print("シールがありません");
+        if (tradeSucceeded) {
+            u8g2.setCursor(0, 32);
+            u8g2.print("シールこうかん！");
+        } else {
+            u8g2.setCursor(0, 20);
+            u8g2.print("こうかんに");
+            u8g2.setCursor(0, 44);
+            u8g2.print("しっぱいしました");
+        }
         display.display();
         xSemaphoreGive(lcdMutex);
         return;

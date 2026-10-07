@@ -7,7 +7,6 @@ const char* getTradeProtocolInitError();
 bool takeTradeDebugStatus(char* status,
                           size_t capacity,
                           bool& tradeInProgress);
-bool takeCompletedTradeReceivedSeal(char* sealId, size_t capacity);
 void notifyTradePeerEncounter(const uint8_t* peerMac,
                               const char* peerDeviceId);
 bool receiveTradeProtocolPacket(const uint8_t* peerMac,
