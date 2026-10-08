@@ -498,7 +498,8 @@ void loop() {
     needDisplayClear = false;
     displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
                                             : ENCOUNTER_SOURCE_CHILD,
-                     displayPeerName);
+                     displayPeerName,
+                     displayPeerDeviceId);
   }
 
   if (encounterSequenceActive &&

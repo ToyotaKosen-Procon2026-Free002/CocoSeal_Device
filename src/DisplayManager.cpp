@@ -27,6 +27,9 @@ void drawJapaneseLines(const char* const* lines, size_t lineCount) {
     } else if (lineCount == 3) {
         lineStep = 18;
         firstLineY = 16;
+    } else if (lineCount == 5) {
+        lineStep = 11;
+        firstLineY = 11;
     } else if (lineCount > 3) {
         lineStep = 48 / static_cast<int>(lineCount - 1);
     }
@@ -102,13 +105,38 @@ void displayBattery(float percent) {
 }
 
 // すれ違い結果の表示
-void displayEncounter(EncounterSource source, const char* peerName) {
+void displayEncounter(EncounterSource source,
+                      const char* peerName,
+                      const char* peerDeviceId) {
     if (source == ENCOUNTER_SOURCE_PARENT) {
         const char* lines[] = {"こうばん", "をとおったよ"};
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
+    } else if (peerName && peerName[0]) {
+        const char* lines[] = {peerName, "とすれちがい"};
+        drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     } else {
-        const char* name = peerName && peerName[0] ? peerName : "ID";
-        const char* lines[] = {name, "とすれちがい"};
+        if (!peerDeviceId || !peerDeviceId[0] ||
+            strcmp(peerDeviceId, "unknown") == 0) {
+            const char* lines[] = {"ID", "とすれちがい"};
+            drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
+            return;
+        }
+
+        char idLine1[13];
+        char idLine2[13];
+        char idLine3[13];
+        snprintf(idLine1, sizeof(idLine1), "%.12s", peerDeviceId);
+        snprintf(idLine2, sizeof(idLine2), "%.12s",
+                 strlen(peerDeviceId) > 12 ? peerDeviceId + 12 : "");
+        snprintf(idLine3, sizeof(idLine3), "%.12s",
+                 strlen(peerDeviceId) > 24 ? peerDeviceId + 24 : "");
+        const char* lines[] = {
+            idLine1,
+            idLine2,
+            idLine3,
+            "とすれちがい",
+            "ました"
+        };
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }
 }
