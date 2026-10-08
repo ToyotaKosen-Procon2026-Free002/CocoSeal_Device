@@ -103,11 +103,11 @@ void displayBattery(float percent) {
 
 // すれ違い結果の表示
 void displayEncounter(EncounterSource source, const char* peerName) {
-    const char* name = peerName && peerName[0] ? peerName : "ID";
     if (source == ENCOUNTER_SOURCE_PARENT) {
         const char* lines[] = {"こうばん", "をとおったよ"};
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     } else {
+        const char* name = peerName && peerName[0] ? peerName : "ID";
         const char* lines[] = {name, "とすれちがい"};
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }
@@ -118,45 +118,10 @@ void displayParentEncounterReward() {
     drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
 }
 
-void displayTradeDebugStatus(const char* status) {
-    const char* message = status && status[0] ? status : "UNKNOWN";
-    bool tradeSucceeded = strncmp(message, "COMPLETE:", 9) == 0;
-    bool tradeFailed = strcmp(message, "TRADE_FAILED") == 0;
-    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) != pdTRUE) {
-        return;
-    }
-
-    if (tradeSucceeded || tradeFailed) {
-        beginJapaneseScreen();
-        if (tradeSucceeded) {
-            u8g2.setCursor(0, 32);
-            u8g2.print("シールこうかん！");
-        } else {
-            u8g2.setCursor(0, 20);
-            u8g2.print("こうかんに");
-            u8g2.setCursor(0, 44);
-            u8g2.print("しっぱいしました");
-        }
-        display.display();
-        xSemaphoreGive(lcdMutex);
-        return;
-    }
-
-    display.clearDisplay();
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("TRADE PROCESS");
-    for (size_t line = 0; line < 4; ++line) {
-        char textLine[22];
-        size_t offset = line * (sizeof(textLine) - 1);
-        if (offset >= strlen(message)) {
-            break;
-        }
-        snprintf(textLine, sizeof(textLine), "%.21s", message + offset);
-        display.setCursor(0, 16 + static_cast<int>(line) * 12);
-        display.print(textLine);
-    }
-    display.display();
-    xSemaphoreGive(lcdMutex);
+void displayTradeSuccess() {
+    const char* lines[] = {
+        "シールこうかん",
+        "せいこう！",
+    };
+    drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
 }

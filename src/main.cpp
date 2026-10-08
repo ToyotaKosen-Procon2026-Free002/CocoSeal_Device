@@ -535,11 +535,22 @@ void loop() {
       static_cast<int32_t>(currentMillis - tradeOutcomeDisplayAt) >= 0 &&
       !encounterSequenceActive && !isAlarmActive) {
     tradeOutcomePending = false;
-    tradeDebugVisible = true;
-    tradeDebugHideAt = currentMillis + 3000;
-    displayTradeDebugStatus(pendingTradeOutcome);
-    displayClearTime = tradeDebugHideAt;
-    needDisplayClear = true;
+
+    // ステータスが "COMPLETE:" から始まっていれば成功とみなす
+    if (strncmp(pendingTradeOutcome, "COMPLETE:", 9) == 0) {
+        tradeDebugVisible = true;
+        tradeDebugHideAt = currentMillis + 3000;
+        displayTradeSuccess();  // 成功画面を表示
+        displayClearTime = tradeDebugHideAt;
+        needDisplayClear = true;
+    } else {
+        // 失敗時は何も表示しない
+        if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+            display.clearDisplay();
+            display.display();
+            xSemaphoreGive(lcdMutex);
+        }
+      }
   }
 
 #if SERVER_SYNC_RUNTIME_ENABLED
