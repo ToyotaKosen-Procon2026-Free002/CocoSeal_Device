@@ -1,5 +1,6 @@
 #include "ServerSync.h"
 
+#include "BatteryManager.h"
 #include "DeviceIdentity.h"
 #include "EspNowManager.h"
 #include "LocalDatabase.h"
@@ -97,6 +98,8 @@ bool deviceActivated = false;
 bool syncScheduleInitialized = false;
 bool deviceProfileRefreshAttempted = false;
 bool tradePoolRefreshAttempted = false;
+bool batteryUpdatePending = false;
+bool previousWifiConnected = false;
 
 const char* syncStageName(uint32_t stage) {
     switch (stage) {
@@ -565,6 +568,8 @@ bool syncEvent(LocalEvent& event, uint32_t currentTimestampUnix) {
     JsonDocument request;
     request["device_id"] = getDeviceId();
     request["request_id"] = eventId;
+    const float batteryPercent = getBatteryPercent();
+    request["battery"] = batteryPercent;
     request["timestamp"] = requestTimestamp;
     request["nearby_communications"].add(communication);
 
@@ -588,6 +593,40 @@ bool syncEvent(LocalEvent& event, uint32_t currentTimestampUnix) {
         return false;
     }
     Serial.printf("Server sync: uploaded event %s\n", event.eventId);
+    return true;
+}
+
+bool syncBatteryStatus(uint32_t currentTimestampUnix) {
+    String timestamp = timestampToIso8601(currentTimestampUnix);
+    if (timestamp.isEmpty()) {
+        Serial.println("Server sync error: failed to format battery timestamp");
+        return false;
+    }
+
+    JsonDocument request;
+    request["device_id"] = getDeviceId();
+    request["request_id"] = String(getDeviceId()) + "-" +
+                            String(currentTimestampUnix);
+    const float batteryPercent = getBatteryPercent();
+    request["battery"] = batteryPercent;
+    request["timestamp"] = timestamp;
+    request["nearby_communications"].to<JsonArray>();
+
+    String requestBody;
+    serializeJson(request, requestBody);
+    String responseBody;
+    int status = postJson("/devices/status", requestBody, true, responseBody);
+    if (status != HTTP_CODE_OK || !parseSuccessResponse(responseBody)) {
+        Serial.printf("Server sync: battery update failed (HTTP %d)\n",
+                      status);
+        if (!responseBody.isEmpty()) {
+            Serial.println(responseBody);
+        }
+        return false;
+    }
+
+    Serial.printf("Server sync: battery updated to %.1f%%\n",
+                  batteryPercent);
     return true;
 }
 }
@@ -617,6 +656,13 @@ void processServerSync() {
     return;
 #endif
 
+    bool wifiConnected = isWifiConnected();
+    if (wifiConnected && !previousWifiConnected) {
+        batteryUpdatePending = true;
+        Serial.println("Server sync: Wi-Fi connected; battery update queued");
+    }
+    previousWifiConnected = wifiConnected;
+
     uint32_t nowMillis = millis();
     if (!syncScheduleInitialized) {
         lastSyncAttempt = nowMillis;
@@ -630,7 +676,7 @@ void processServerSync() {
     lastSyncAttempt = nowMillis;
 
     setSyncDiagnosticStage(SYNC_STAGE_CHECK_WIFI, false);
-    if (!isWifiConnected()) {
+    if (!wifiConnected) {
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
@@ -641,6 +687,19 @@ void processServerSync() {
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
     }
+
+    uint32_t currentTimestampUnix = 0;
+    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME, false);
+    if (!getTrustedUnixTime(currentTimestampUnix)) {
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
+    }
+    if (batteryUpdatePending &&
+        syncBatteryStatus(currentTimestampUnix)) {
+        batteryUpdatePending = false;
+    }
+
     if (!deviceProfileRefreshAttempted ||
         nowMillis - lastDeviceProfileRefreshAttempt >=
             TRADE_POOL_REFRESH_INTERVAL_MS) {
@@ -658,14 +717,6 @@ void processServerSync() {
             syncDiagnosticStage = SYNC_STAGE_IDLE;
             return;
         }
-    }
-
-    uint32_t currentTimestampUnix = 0;
-    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME, false);
-    if (!getTrustedUnixTime(currentTimestampUnix)) {
-        syncDiagnosticMagic = 0;
-        syncDiagnosticStage = SYNC_STAGE_IDLE;
-        return;
     }
 
     setSyncDiagnosticStage(SYNC_STAGE_FIND_EVENT);
@@ -699,7 +750,11 @@ void processServerSync() {
         return;
     }
 
-    syncEvent(pendingEvent, currentTimestampUnix);
+    if (hasSyncableEvent) {
+        if (syncEvent(pendingEvent, currentTimestampUnix)) {
+            batteryUpdatePending = false;
+        }
+    }
     syncDiagnosticMagic = 0;
     syncDiagnosticStage = SYNC_STAGE_IDLE;
 }

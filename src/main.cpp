@@ -3,6 +3,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
 #include "DisplayManager.h"
+#include "BatteryManager.h"
 #include "DeviceIdentity.h"
 #include "EspNowManager.h"
 #include "LocalDatabase.h"
@@ -27,10 +28,6 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 #define BUTTON_2_PIN 9
 
 #define BUZZER_PIN 3
-
-#define BATTERY_PIN 0
-#define BATTERY_100_VOLT_HALF 4.2 / 2
-#define BATTERY_0_VOLT_HALF 3.2 / 2
 
 #define LCD_SCK_PIN 4
 #define LCD_SDA_PIN 5
@@ -293,9 +290,7 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
 
-  pinMode(BATTERY_PIN, INPUT);
-  analogSetAttenuation(ADC_11db);
-  analogReadResolution(12);
+  initializeBatteryMonitor();
   completeBootStep(BOOT_STAGE_GPIO);
 
   beginBootStep(BOOT_STAGE_DEVICE_IDENTITY);
@@ -418,12 +413,6 @@ void setup() {
   completeBootStep(BOOT_STAGE_COMPLETE);
 }
   
-
-float getBatteryPercent() {
-  int millivolt = analogReadMilliVolts(BATTERY_PIN);
-  float percent = (millivolt - BATTERY_0_VOLT_HALF * 1000) / (BATTERY_100_VOLT_HALF * 1000 - BATTERY_0_VOLT_HALF * 1000);
-  return percent * 100.0;
-}
 
 int lastBtn1State = HIGH;         // ボタン1の以前の状態
 unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間

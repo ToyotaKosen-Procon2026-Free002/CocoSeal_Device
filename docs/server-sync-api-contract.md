@@ -7,11 +7,13 @@
 - `POST /devices/activate`：デバイスUUIDとP-256公開鍵を登録します。
 - `GET /devices/device`：デバイス署名付きで自分のデバイス情報を取得し、登録表示名を無線で送信します。
 - `GET /devices/trading_seals`：子機署名付きでサーバー上の交換プールを取得します。レスポンスの各`seal_id`を端末の交換可能在庫へ反映します。
-- `POST /devices/status`：すれ違いまたは交換完了イベントを1件ずつ送信します。
+- `POST /devices/status`：電池残量を送信し、すれ違いまたは交換完了イベントがあれば1件ずつ同時に送信します。
 
 ファームウェアは公開鍵とECDSA署名を小文字の16進文字列で送信します。`SERVER_API_HEX_FIELDS=0`ではサーバー同期が無効になり、互換APIをサーバーにデプロイした環境では`SERVER_API_HEX_FIELDS=1`に設定してください。
 
 ファームウェアはイベントにECDSA P-256 / SHA-256署名を付けます。認証が必要なHTTPリクエストでは`X-Device-Id`と`X-Device-Signature`ヘッダーを使用します。後者は、`device_id`のUTF-8バイト列と**実際に送信するJSONリクエスト本文のバイト列**を連結したデータに対するDER形式の署名を、小文字の16進数にした値です。
+
+Wi-Fi接続または再接続後、ファームウェアは`/devices/status`へ`battery`を含むリクエストを送ります。イベントがない場合も`nearby_communications`を空配列にして送信し、`battery`は0〜100のパーセント値です。イベントを送る場合も同じリクエストに最新の電池残量を含めます。したがって、サーバーの`DeviceUpdateRequest`が要求する`battery`項目に対応しています。
 
 `GET /devices/device`と`GET /devices/trading_seals`にはJSON本文がないため、`X-Device-Signature`はデバイスIDのUTF-8バイト列だけを署名します。`/devices/device`の`Device.name`を自身の無線名として使用します。レスポンスの`DeviceSeal`配列に同じ`seal_id`が複数ある場合、その出現数を交換可能枚数として扱います。同期に成功したときだけローカルの交換プールをサーバー内容に置き換え、サーバーアクセスに失敗した場合は既存のローカル在庫を保持します。
 
@@ -43,6 +45,7 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
 {
   "device_id": "child-uuid",
   "request_id": "event-uuid",
+  "battery": 75.0,
   "timestamp": "2026-09-08T12:00:00Z",
   "nearby_communications": [{
     "event_id": "event-uuid",
@@ -88,7 +91,7 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
 
 ### バッテリー情報
 
-今回のファームウェア同期対象はすれ違い・シール交換イベントであり、バッテリー残量は送信しません。現行の`DeviceUpdateRequest`にもバッテリー項目はありません。そのため、バッテリー残量更新のためのサーバー変更は今回の同期には不要です。将来同期対象にする場合は、リクエスト項目・値の範囲（0〜100%）・最終更新時刻を別途定義してください。
+`DeviceUpdateRequest`の`battery`は必須項目です。ファームウェアはWi-Fi接続または再接続後、およびすれ違い・交換イベントの送信時に、0〜100のパーセント値とUTCの更新時刻を送ります。イベントを伴わない更新では`nearby_communications`は空配列です。サーバーは既存の`update_device_status()`で`battery`と`last_timestamp`を更新するため、追加のAPI変更は不要です。
 
 ## SOS同期（追加設計が必要）
 
