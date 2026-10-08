@@ -4,6 +4,7 @@
 #include "TradeProtocol.h"
 
 #include <WiFi.h>
+#include <esp_wifi.h>
 
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
@@ -358,11 +359,20 @@ void setupEspNow() {
                   static_cast<unsigned>(sizeof(CommunicationPacket)));
 }
 
+// ★ 修正点: 1〜13チャネルへ巡回しながらパケットを散布送信する
 void sendEncounterAnnouncement() {
     sendNameAnnouncement();
     CommunicationPacket packet = makePacket(MESSAGE_TYPE_ENCOUNTER);
     setEspNowStatus(ESP_NOW_SENDING);
-    sendPacket(packet);
+
+    uint8_t originalCh = WiFi.channel();
+    for (uint8_t ch = 1; ch <= 13; ch++) {
+        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+        delay(1);
+        sendPacket(packet);
+        delay(2);
+    }
+    esp_wifi_set_channel(originalCh > 0 ? originalCh : 1, WIFI_SECOND_CHAN_NONE);
 }
 
 void sendSosNotification() {

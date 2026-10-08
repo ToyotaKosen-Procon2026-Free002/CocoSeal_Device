@@ -561,10 +561,11 @@ void loop() {
     }
   }
 
-  // 定期的に自分のデータを周囲に送信
-  static unsigned long lastSendTime = 0;
-  if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
-    lastSendTime = currentMillis;
+  // ★ 修正点: 5秒ごとに子機から全13チャネルへすれ違い信号を自発送信する
+  static unsigned long lastEncounterSendTime = 0;
+  if (currentMillis - lastEncounterSendTime >= 5000) {
+    lastEncounterSendTime = currentMillis;
+    Serial.println("[ESP-NOW] Sending encounter announcement...");
     sendEncounterAnnouncement();
   }
 
