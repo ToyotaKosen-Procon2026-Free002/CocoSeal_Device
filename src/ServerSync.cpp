@@ -517,12 +517,9 @@ bool syncEvent(LocalEvent& event, uint32_t currentTimestampUnix) {
     if (event.type == LOCAL_EVENT_TRADE_COMPLETE) {
         sendSealId = toLowerString(event.sentStickerId);
         receiveSealId = toLowerString(event.receivedStickerId);
-    }
-#if !CONTEST_MODE
-    else if (event.partnerIsGateway && event.stickerId[0] != '\0') {
+    } else if (event.partnerIsGateway && event.stickerId[0] != '\0') {
         receiveSealId = toLowerString(event.stickerId);
     }
-#endif
 
     String eventTimestamp = timestampToIso8601(event.timestampUnix);
     String requestTimestamp = timestampToIso8601(currentTimestampUnix);

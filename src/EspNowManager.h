@@ -22,6 +22,10 @@ struct NameAnnouncementPacket {
 static_assert(sizeof(int) == 4, "Parent protocol requires 32-bit int");
 static_assert(offsetof(CommunicationPacket, type) == 40,
               "CommunicationPacket layout mismatch");
+static_assert(offsetof(CommunicationPacket, stickerId) == 44,
+              "Parent sticker packet layout mismatch");
+static_assert(offsetof(CommunicationPacket, isGateway) == 60,
+              "Parent gateway flag layout mismatch");
 static_assert(sizeof(CommunicationPacket) == 64,
               "CommunicationPacket layout mismatch");
 static_assert(offsetof(NameAnnouncementPacket, type) == 40,
