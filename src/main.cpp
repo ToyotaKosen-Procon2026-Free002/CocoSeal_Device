@@ -157,12 +157,21 @@ void LoRaSendTask() {
   if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
     display.clearDisplay();
     display.setCursor(0, 0);
-    String msg = "SOS !!";
+    const char* deviceId = getDeviceId();
+    char msg[42];
+    int msgLength = deviceId && deviceId[0]
+                        ? snprintf(msg, sizeof(msg), "SOS:%s\n", deviceId)
+                        : -1;
 
-    if (lora.SendFrame(config, (uint8_t *)msg.c_str(), strlen(msg.c_str())) == 0) {
+    if (msgLength > 0 && msgLength < static_cast<int>(sizeof(msg)) &&
+        lora.SendFrame(config, reinterpret_cast<uint8_t*>(msg),
+                       static_cast<size_t>(msgLength)) == 0) {
       display.printf("send succeeded.\n");
       display.printf("\n");
     } else {
+      if (msgLength <= 0 || msgLength >= static_cast<int>(sizeof(msg))) {
+        Serial.println("LoRa SOS error: invalid device ID or payload length");
+      }
       display.printf("send failed.\n");
       display.printf("\n");
     }
