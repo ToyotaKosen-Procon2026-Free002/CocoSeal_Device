@@ -9,14 +9,14 @@
 struct CommunicationPacket {
     char device_id[37];
     int type; // 0: encounter/sticker request, 1: SOS, 2: name packet layout
-    char stickerId[16];
+    char stickerId[37];
     bool isGateway;
 };
 
 struct NameAnnouncementPacket {
     char device_id[37];
     int type;
-    char name[20];
+    char name[37];
 };
 
 static_assert(sizeof(int) == 4, "Parent protocol requires 32-bit int");
@@ -24,16 +24,16 @@ static_assert(offsetof(CommunicationPacket, type) == 40,
               "CommunicationPacket layout mismatch");
 static_assert(offsetof(CommunicationPacket, stickerId) == 44,
               "Parent sticker packet layout mismatch");
-static_assert(offsetof(CommunicationPacket, isGateway) == 60,
+static_assert(offsetof(CommunicationPacket, isGateway) == 81,
               "Parent gateway flag layout mismatch");
-static_assert(sizeof(CommunicationPacket) == 64,
+static_assert(sizeof(CommunicationPacket) == 84,
               "CommunicationPacket layout mismatch");
 static_assert(offsetof(NameAnnouncementPacket, type) == 40,
               "Name announcement protocol layout mismatch");
 static_assert(offsetof(NameAnnouncementPacket, name) == 44,
               "Name announcement protocol layout mismatch");
-static_assert(sizeof(NameAnnouncementPacket) == 64,
-              "Name announcement must remain compatible with 64-byte ESP-NOW frames");
+static_assert(sizeof(NameAnnouncementPacket) == 84,
+              "Name announcement must remain compatible with parent ESP-NOW frames");
 
 enum EspNowStatus {
     ESP_NOW_WAITING,
@@ -48,9 +48,9 @@ extern volatile EspNowStatus espNowStatus;
 // main.cpp用のフラグ関数
 extern volatile bool encounterFlag;
 extern volatile bool sosReceivedEspNow;
-extern char displayStickerId[16];
+extern char displayStickerId[37];
 extern char displayPeerDeviceId[37];
-extern char displayPeerName[20];
+extern char displayPeerName[37];
 extern bool getSticker;
 extern bool isRareSticker;
 extern volatile bool lastEncounterWasParent;

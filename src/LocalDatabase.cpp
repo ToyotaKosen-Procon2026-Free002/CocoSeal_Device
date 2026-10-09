@@ -10,7 +10,7 @@
 namespace {
 constexpr char PREFERENCES_NAMESPACE[] = "events";
 constexpr char BOOT_ID_KEY[] = "boot";
-constexpr uint8_t SCHEMA_VERSION = 3;
+constexpr uint8_t SCHEMA_VERSION = 4;
 constexpr size_t MAX_PENDING_EVENTS = 32;
 constexpr UBaseType_t EVENT_QUEUE_LENGTH = 8;
 constexpr uint32_t STORAGE_RETRY_INTERVAL_MS = 5000;
@@ -21,6 +21,27 @@ uint32_t lastStorageRetry = 0;
 bool databaseReady = false;
 bool storageRetryPending = false;
 
+struct LegacyLocalEventV3 {
+    uint8_t schemaVersion;
+    LocalEventType type;
+    uint8_t partnerIsGateway;
+    uint8_t gatewayRewardProcessed;
+    uint32_t uptimeMs;
+    uint32_t timestampUnix;
+    char bootId[37];
+    char eventId[37];
+    char originDeviceId[37];
+    char partnerDeviceId[37];
+    char partnerName[20];
+    char stickerId[16];
+    char sentStickerId[37];
+    char receivedStickerId[37];
+    uint32_t checksum;
+};
+
+static_assert(sizeof(LegacyLocalEventV3) == 276,
+              "Legacy local event layout mismatch");
+
 void slotKey(size_t index, char* key, size_t capacity) {
     snprintf(key, capacity, "e%02u", static_cast<unsigned>(index));
 }
@@ -29,6 +50,18 @@ uint32_t calculateChecksum(const LocalEvent& event) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&event);
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < offsetof(LocalEvent, checksum); ++i) {
+        crc ^= bytes[i];
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+        }
+    }
+    return ~crc;
+}
+
+uint32_t calculateLegacyChecksum(const LegacyLocalEventV3& event) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&event);
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < offsetof(LegacyLocalEventV3, checksum); ++i) {
         crc ^= bytes[i];
         for (uint8_t bit = 0; bit < 8; ++bit) {
             crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
@@ -50,6 +83,58 @@ bool isValidEvent(const LocalEvent& event) {
            event.sentStickerId[sizeof(event.sentStickerId) - 1] == '\0' &&
            event.receivedStickerId[sizeof(event.receivedStickerId) - 1] == '\0' &&
            event.checksum == calculateChecksum(event);
+}
+
+bool migrateLegacyEventV3(Preferences& preferences,
+                          size_t index,
+                          LocalEvent& event,
+                          bool& isValidLegacy) {
+    isValidLegacy = false;
+    char key[4];
+    slotKey(index, key, sizeof(key));
+    if (preferences.getBytesLength(key) != sizeof(LegacyLocalEventV3)) {
+        return false;
+    }
+
+    LegacyLocalEventV3 legacy = {};
+    if (preferences.getBytes(key, &legacy, sizeof(legacy)) != sizeof(legacy) ||
+        legacy.schemaVersion != 3 ||
+        legacy.type < LOCAL_EVENT_ENCOUNTER ||
+        legacy.type > LOCAL_EVENT_TRADE_COMPLETE ||
+        legacy.bootId[sizeof(legacy.bootId) - 1] != '\0' ||
+        legacy.eventId[sizeof(legacy.eventId) - 1] != '\0' ||
+        legacy.originDeviceId[sizeof(legacy.originDeviceId) - 1] != '\0' ||
+        legacy.partnerDeviceId[sizeof(legacy.partnerDeviceId) - 1] != '\0' ||
+        legacy.partnerName[sizeof(legacy.partnerName) - 1] != '\0' ||
+        legacy.stickerId[sizeof(legacy.stickerId) - 1] != '\0' ||
+        legacy.sentStickerId[sizeof(legacy.sentStickerId) - 1] != '\0' ||
+        legacy.receivedStickerId[sizeof(legacy.receivedStickerId) - 1] != '\0' ||
+        legacy.checksum != calculateLegacyChecksum(legacy)) {
+        return false;
+    }
+
+    isValidLegacy = true;
+    event = {};
+    event.schemaVersion = SCHEMA_VERSION;
+    event.type = legacy.type;
+    event.partnerIsGateway = legacy.partnerIsGateway;
+    event.gatewayRewardProcessed = legacy.gatewayRewardProcessed;
+    event.uptimeMs = legacy.uptimeMs;
+    event.timestampUnix = legacy.timestampUnix;
+    memcpy(event.bootId, legacy.bootId, sizeof(event.bootId));
+    memcpy(event.eventId, legacy.eventId, sizeof(event.eventId));
+    memcpy(event.originDeviceId, legacy.originDeviceId,
+           sizeof(event.originDeviceId));
+    memcpy(event.partnerDeviceId, legacy.partnerDeviceId,
+           sizeof(event.partnerDeviceId));
+    memcpy(event.partnerName, legacy.partnerName, sizeof(legacy.partnerName));
+    memcpy(event.stickerId, legacy.stickerId, sizeof(legacy.stickerId));
+    memcpy(event.sentStickerId, legacy.sentStickerId,
+           sizeof(event.sentStickerId));
+    memcpy(event.receivedStickerId, legacy.receivedStickerId,
+           sizeof(event.receivedStickerId));
+    event.checksum = calculateChecksum(event);
+    return preferences.putBytes(key, &event, sizeof(event)) == sizeof(event);
 }
 
 bool readSlot(Preferences& preferences, size_t index, LocalEvent& event) {
@@ -165,6 +250,7 @@ bool initializeLocalDatabase() {
     }
 
     size_t removedCount = 0;
+    size_t migratedCount = 0;
     for (size_t i = 0; i < MAX_PENDING_EVENTS; ++i) {
         char key[4];
         slotKey(i, key, sizeof(key));
@@ -174,6 +260,17 @@ bool initializeLocalDatabase() {
         LocalEvent event = {};
         if (readSlot(preferences, i, event)) {
             continue;
+        }
+        bool isValidLegacy = false;
+        if (migrateLegacyEventV3(preferences, i, event, isValidLegacy)) {
+            ++migratedCount;
+            continue;
+        }
+        if (isValidLegacy) {
+            Serial.printf("Local DB error: failed migrating event slot %s\n",
+                          key);
+            preferences.end();
+            return false;
         }
         if (!preferences.remove(key)) {
             Serial.printf("Local DB error: failed to remove invalid slot %s\n",
@@ -228,6 +325,10 @@ bool initializeLocalDatabase() {
     if (removedCount > 0) {
         Serial.printf("; removed %u incompatible/corrupt records",
                       static_cast<unsigned>(removedCount));
+    }
+    if (migratedCount > 0) {
+        Serial.printf("; migrated %u legacy records",
+                      static_cast<unsigned>(migratedCount));
     }
     if (discardedUntrustedCount > 0) {
         Serial.printf("; discarded %u old events without trusted timestamps",

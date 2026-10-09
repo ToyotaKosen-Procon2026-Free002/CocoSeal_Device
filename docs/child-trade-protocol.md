@@ -50,9 +50,11 @@ Intermediate exchange protocol states are not shown on the OLED. Both children
 show `シールこうかん！` after success, or `こうかんに / しっぱいしました`
 when no eligible seal is available or the exchange fails.
 
-The legacy 64-byte parent packet format is unchanged. New trade messages are
-sent only to the encountered child's MAC address; a parent receiving an
-unrecognized trade packet length should ignore it.
+Gateway communication packets use the parent's 84-byte layout, including a
+37-byte sticker/name field. Signed SOS packets use the matching 212-byte
+layout. New trade messages are sent only to the encountered child's MAC
+address; a parent receiving an unrecognized trade packet length should ignore
+it.
 
 This first implementation is not cryptographically authenticated or encrypted.
 CRC32 detects accidental corruption but does not prevent a nearby device from

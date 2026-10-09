@@ -26,14 +26,14 @@ struct GatewaySosCommunicationPacket {
     uint8_t signature_length;
 };
 
-static_assert(offsetof(GatewaySosCommunicationPacket, event_id) == 64,
+static_assert(offsetof(GatewaySosCommunicationPacket, event_id) == 84,
               "SOS event ID protocol offset mismatch");
 static_assert(offsetof(GatewaySosCommunicationPacket, trigger_timestamp) ==
-                  104,
+                  124,
               "SOS timestamp protocol offset mismatch");
-static_assert(offsetof(GatewaySosCommunicationPacket, signature) == 108,
+static_assert(offsetof(GatewaySosCommunicationPacket, signature) == 128,
               "SOS signature protocol offset mismatch");
-static_assert(sizeof(GatewaySosCommunicationPacket) == 192,
+static_assert(sizeof(GatewaySosCommunicationPacket) == 212,
               "SOS packet layout must match the gateway firmware");
 
 namespace {
@@ -45,13 +45,13 @@ struct EncounterHistory {
 
 struct PeerName {
     char deviceId[37];
-    char name[20];
+    char name[37];
 };
 
 EncounterHistory recentHistory[ENCOUNTER_HISTORY_SIZE] = {};
 PeerName peerNames[PEER_NAME_CACHE_SIZE] = {};
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-char localDeviceName[20] = "";
+char localDeviceName[37] = "";
 bool localDeviceNameAvailable = false;
 char scheduledPeerDeviceId[37] = "";
 uint32_t synchronizedDisplayAt = 0;
@@ -368,9 +368,9 @@ void onEspNowSent(const uint8_t *, esp_now_send_status_t status) {
 
 volatile bool encounterFlag = false;
 volatile bool sosReceivedEspNow = false;
-char displayStickerId[16] = "";
+char displayStickerId[37] = "";
 char displayPeerDeviceId[37] = "";
-char displayPeerName[20] = "";
+char displayPeerName[37] = "";
 bool getSticker = false;
 bool isRareSticker = false;
 volatile bool lastEncounterWasParent = false;

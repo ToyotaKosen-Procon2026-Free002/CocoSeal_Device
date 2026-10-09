@@ -13,9 +13,10 @@ after NTP synchronization only while the device has not rebooted. At startup,
 events from a previous boot without a trusted timestamp are discarded because
 their original time cannot be recovered and the server requires a signed event
 timestamp. Events with a timestamp and events from the current boot are retained.
-Event schema version 3 stores the partner's advertised display name. Pending
-events from older schema versions are removed at startup because their stored
-format is incompatible.
+Event schema version 4 stores the partner's advertised display name and the
+full 36-character gateway sticker UUID. Version 3 events are migrated at
+startup; older or corrupt records are removed because their stored format is
+incompatible.
 
 SOS events remain local for now. The server SOS endpoint requires a gateway ID
 and receive timestamp that are not available in the current child-device event.

@@ -20,8 +20,8 @@ struct LocalEvent {
     char eventId[37];
     char originDeviceId[37];
     char partnerDeviceId[37];
-    char partnerName[20];
-    char stickerId[16];
+    char partnerName[37];
+    char stickerId[37];
     char sentStickerId[37];
     char receivedStickerId[37];
     uint32_t checksum;
