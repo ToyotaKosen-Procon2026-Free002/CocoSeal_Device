@@ -31,7 +31,7 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
 `partner_name`には遭遇時に相手から受信した表示名を含めます。名前通知を受け取っていない既存イベントでは空文字列です。この値はイベント署名のcanonical文字列には含めず、実際のJSON本文を使うリクエスト署名には含めます。
 親機から配布されたシールを受信した遭遇では、親機のUUIDを`partner_id`、`partner_is_gateway`を`true`、受信したシールIDを`receive_seal_id`として、子機自身が署名付きで`POST /devices/status`へ送ります。サーバーの`DeviceUpdateRequest`では`device_id`は子機UUID、`request_id`はイベントUUID、`battery`は0〜100、`timestamp`は送信時刻、`nearby_communications`はこの遭遇イベントを含む配列です。正常に登録されたイベントの`receive_seal_id`は、サーバー側の子機在庫へ追加されます。
 
-ESP-NOWの親機配布パケットは64バイトで、`device_id`（37バイト）、`type`（32-bit、オフセット40）、`stickerId`（16バイト、オフセット44）、`isGateway`（オフセット60）です。受信側は`type=0`かつ`isGateway=true`のパケットを親機遭遇として扱い、パケット内の`stickerId`を上記の`receive_seal_id`として記録します。親機は続けて`type=2`、`isGateway=true`の同じレイアウトのパケットを送り、オフセット44の`stickerId`領域にスポット名（最大15 UTF-8バイト）を載せます。子機は親機IDに対応付けて名前をキャッシュし、遭遇表示の「をとおったよ」の前に表示します。
+ESP-NOWの親機配布パケットは64バイトで、`device_id`（37バイト）、`type`（32-bit、オフセット40）、`stickerId`（16バイト、オフセット44）、`isGateway`（オフセット60）です。受信側は`type=0`かつ`isGateway=true`のパケットを親機遭遇として扱い、パケット内の`stickerId`を上記の`receive_seal_id`として記録します。
 
 有効化リクエストの例（`public_key`の値は16進数130文字です）。既存の登録名を上書きしないよう、ファームウェアは任意項目の`name`を送らず、`GET /devices/device`で取得した名前を無線通知に使用します。
 
