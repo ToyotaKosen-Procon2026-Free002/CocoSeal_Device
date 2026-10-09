@@ -12,6 +12,7 @@
 #define MESSAGE_TYPE_NAME_ANNOUNCEMENT 2
 #define PEER_NAME_CACHE_SIZE 10
 #define SYNCHRONIZED_DISPLAY_DELAY_MS 300
+#define PARENT_NAME_DISPLAY_DELAY_MS 300
 
 namespace {
 struct EncounterHistory {
@@ -33,29 +34,57 @@ bool localDeviceNameAvailable = false;
 char scheduledPeerDeviceId[37] = "";
 uint32_t synchronizedDisplayAt = 0;
 bool synchronizedDisplayPending = false;
+char scheduledParentDeviceId[37] = "";
+uint32_t parentNameDisplayAt = 0;
+bool parentNameDisplayPending = false;
 
 size_t utf8PrefixLength(const char* text, size_t capacity) {
     if (!text || capacity == 0) {
         return 0;
     }
     size_t length = strnlen(text, capacity);
-    if (length < capacity) {
-        return length;
-    }
+    size_t limit = length < capacity ? length : capacity - 1;
+    size_t validLength = 0;
+    while (validLength < limit) {
+        uint8_t lead = static_cast<uint8_t>(text[validLength]);
+        size_t codePointLength = 0;
+        if (lead <= 0x7F) {
+            codePointLength = 1;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            codePointLength = 2;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            codePointLength = 3;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            codePointLength = 4;
+        } else {
+            break;
+        }
+        if (codePointLength > limit - validLength) {
+            break;
+        }
 
-    size_t prefixLength = capacity - 1;
-    while (prefixLength > 0 &&
-           (static_cast<uint8_t>(text[prefixLength]) & 0xC0) == 0x80) {
-        --prefixLength;
+        bool validCodePoint = true;
+        for (size_t i = 1; i < codePointLength; ++i) {
+            if ((static_cast<uint8_t>(text[validLength + i]) & 0xC0) !=
+                0x80) {
+                validCodePoint = false;
+                break;
+            }
+        }
+        if (!validCodePoint) {
+            break;
+        }
+
+        uint8_t second = static_cast<uint8_t>(text[validLength + 1]);
+        if ((lead == 0xE0 && second < 0xA0) ||
+            (lead == 0xED && second > 0x9F) ||
+            (lead == 0xF0 && second < 0x90) ||
+            (lead == 0xF4 && second > 0x8F)) {
+            break;
+        }
+        validLength += codePointLength;
     }
-    uint8_t lead = static_cast<uint8_t>(text[prefixLength]);
-    size_t codePointLength = lead < 0x80 ? 1 :
-                             (lead & 0xE0) == 0xC0 ? 2 :
-                             (lead & 0xF0) == 0xE0 ? 3 :
-                             (lead & 0xF8) == 0xF0 ? 4 : 1;
-    return prefixLength + codePointLength <= capacity - 1
-               ? prefixLength + codePointLength
-               : prefixLength;
+    return validLength;
 }
 
 void copyUtf8(char* destination, size_t capacity, const char* source) {
@@ -255,7 +284,11 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     isRareSticker = false;
     setEspNowStatus(ESP_NOW_ESTABLISHED);
     if (packet.isGateway) {
-        encounterFlag = true;
+        snprintf(scheduledParentDeviceId,
+                 sizeof(scheduledParentDeviceId), "%s",
+                 displayPeerDeviceId);
+        parentNameDisplayAt = millis() + PARENT_NAME_DISPLAY_DELAY_MS;
+        parentNameDisplayPending = true;
     }
 
     Serial.printf("Encounter from %s (%s), sticker: %s\n",
@@ -310,10 +343,21 @@ void scheduleSynchronizedEncounterDisplay(const char* peerDeviceId) {
 }
 
 bool isSynchronizedEncounterDisplayPending() {
-    return synchronizedDisplayPending;
+    return synchronizedDisplayPending || parentNameDisplayPending;
 }
 
 void processEspNowDisplayEvents() {
+    if (parentNameDisplayPending &&
+        static_cast<int32_t>(millis() - parentNameDisplayAt) >= 0) {
+        parentNameDisplayPending = false;
+        snprintf(displayPeerDeviceId, sizeof(displayPeerDeviceId), "%s",
+                 scheduledParentDeviceId);
+        copyUtf8(displayPeerName, sizeof(displayPeerName),
+                 findPeerName(scheduledParentDeviceId));
+        lastEncounterWasParent = true;
+        encounterFlag = true;
+    }
+
     if (!synchronizedDisplayPending ||
         static_cast<int32_t>(millis() - synchronizedDisplayAt) < 0) {
         return;

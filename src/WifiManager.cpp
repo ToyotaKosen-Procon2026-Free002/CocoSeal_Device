@@ -69,26 +69,28 @@ bool copyCredential(char* destination,
 
 bool loadWifiCredentials() {
     Preferences preferences;
-    if (!preferences.begin(WIFI_PREFERENCES_NAMESPACE, true)) {
-        Serial.println("Wi-Fi error: failed to open credential storage");
-        return false;
-    }
-    String ssid = preferences.getString("ssid", "");
-    String password = preferences.getString("password", "");
-    preferences.end();
+    if (preferences.begin(WIFI_PREFERENCES_NAMESPACE, true)) {
+        String ssid = preferences.getString("ssid", "");
+        String password = preferences.getString("password", "");
+        preferences.end();
 
-    if (!ssid.isEmpty()) {
-        if (!copyCredential(activeSsid, sizeof(activeSsid), ssid,
-                            MAX_SSID_LENGTH) ||
-            !copyCredential(activePassword, sizeof(activePassword), password,
-                            MAX_PASSWORD_LENGTH)) {
-            Serial.println("Wi-Fi error: stored credentials have invalid lengths");
-            memset(activeSsid, 0, sizeof(activeSsid));
-            memset(activePassword, 0, sizeof(activePassword));
-            return false;
+        if (!ssid.isEmpty()) {
+            if (!copyCredential(activeSsid, sizeof(activeSsid), ssid,
+                                MAX_SSID_LENGTH) ||
+                !copyCredential(activePassword, sizeof(activePassword),
+                                password, MAX_PASSWORD_LENGTH)) {
+                Serial.println(
+                    "Wi-Fi error: stored credentials have invalid lengths");
+                memset(activeSsid, 0, sizeof(activeSsid));
+                memset(activePassword, 0, sizeof(activePassword));
+                return false;
+            }
+            activeCredentialsAvailable = true;
+            return true;
         }
-        activeCredentialsAvailable = true;
-        return true;
+    } else {
+        Serial.println(
+            "Wi-Fi notice: no saved credentials; checking build-time configuration");
     }
 
     const String configuredSsid = WIFI_SSID;
