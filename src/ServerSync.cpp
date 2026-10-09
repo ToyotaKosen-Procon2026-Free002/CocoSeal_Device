@@ -28,7 +28,7 @@
 #endif
 
 namespace {
-constexpr uint32_t SYNC_INTERVAL_MS = 10000;
+constexpr uint32_t SYNC_INTERVAL_MS = 5000;
 constexpr uint32_t TRADE_POOL_REFRESH_INTERVAL_MS = 60000;
 constexpr uint32_t DEVICE_PROFILE_REFRESH_INTERVAL_MS = 300000;
 constexpr uint32_t SERVER_SYNC_TASK_STACK_SIZE = 16384;
@@ -307,6 +307,8 @@ bool fetchDeviceProfile() {
     http.end();
 
     if (status != HTTP_CODE_OK) {
+        Serial.printf("Server sync error: device-profile GET returned HTTP %d\n",
+                      status);
         if (!responseBody.isEmpty()) {
             Serial.println(responseBody);
         }
@@ -324,7 +326,7 @@ bool fetchDeviceProfile() {
     }
 
     setLocalDeviceName(name);
-    Serial.println("Server sync: device profile refreshed");
+    Serial.printf("BOOT: own device name: %s\n", name);
     return true;
 }
 
@@ -617,10 +619,8 @@ void processServerSync() {
 
     uint32_t nowMillis = millis();
     if (!syncScheduleInitialized) {
-        lastSyncAttempt = nowMillis;
+        lastSyncAttempt = nowMillis - SYNC_INTERVAL_MS;
         syncScheduleInitialized = true;
-        Serial.println("Server sync: waiting before first attempt");
-        return;
     }
     if (nowMillis - lastSyncAttempt < SYNC_INTERVAL_MS) {
         return;
@@ -642,23 +642,6 @@ void processServerSync() {
         return;
     }
 
-    uint32_t currentTimestampUnix = 0;
-    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME);
-    if (!getTrustedUnixTime(currentTimestampUnix)) {
-        syncDiagnosticMagic = 0;
-        syncDiagnosticStage = SYNC_STAGE_IDLE;
-        return;
-    }
-    if (batteryUpdatePending) {
-        if (syncBatteryStatus(currentTimestampUnix)) {
-            batteryUpdatePending = false;
-        }
-        lastSyncAttempt = millis();
-        syncDiagnosticMagic = 0;
-        syncDiagnosticStage = SYNC_STAGE_IDLE;
-        return;
-    }
-
     if (!deviceProfileRefreshAttempted ||
         nowMillis - lastDeviceProfileRefreshAttempt >=
             DEVICE_PROFILE_REFRESH_INTERVAL_MS) {
@@ -674,6 +657,23 @@ void processServerSync() {
             TRADE_POOL_REFRESH_INTERVAL_MS) {
         lastTradePoolRefreshAttempt = nowMillis;
         tradePoolRefreshAttempted = fetchServerTradePool();
+        lastSyncAttempt = millis();
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
+    }
+
+    uint32_t currentTimestampUnix = 0;
+    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME);
+    if (!getTrustedUnixTime(currentTimestampUnix)) {
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
+    }
+    if (batteryUpdatePending) {
+        if (syncBatteryStatus(currentTimestampUnix)) {
+            batteryUpdatePending = false;
+        }
         lastSyncAttempt = millis();
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;

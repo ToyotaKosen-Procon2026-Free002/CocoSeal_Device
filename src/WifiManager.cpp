@@ -7,8 +7,6 @@
 #include <atomic>
 #include <Preferences.h>
 
-#include "WifiProvisioning.h"
-
 #define ESP_NOW_FALLBACK_CHANNEL 1
 
 #ifndef WIFI_SSID
@@ -35,11 +33,7 @@ uint8_t lastConnectedChannel = 0;
 uint32_t lastTimeSyncDiagnostic = 0;
 char activeSsid[MAX_SSID_LENGTH + 1] = {};
 char activePassword[MAX_PASSWORD_LENGTH + 1] = {};
-char candidateSsid[MAX_SSID_LENGTH + 1] = {};
-char candidatePassword[MAX_PASSWORD_LENGTH + 1] = {};
 bool activeCredentialsAvailable = false;
-bool candidateConnectionPending = false;
-uint32_t candidateConnectionStartedAt = 0;
 
 void setEspNowFallbackChannel() {
     esp_err_t result =
@@ -68,6 +62,23 @@ bool copyCredential(char* destination,
 }
 
 bool loadWifiCredentials() {
+    const String configuredSsid = WIFI_SSID;
+    const String configuredPassword = WIFI_PASSWORD;
+    if (!configuredSsid.isEmpty()) {
+        if (!copyCredential(activeSsid, sizeof(activeSsid), configuredSsid,
+                            MAX_SSID_LENGTH) ||
+            !copyCredential(activePassword, sizeof(activePassword),
+                            configuredPassword, MAX_PASSWORD_LENGTH)) {
+            Serial.println("Wi-Fi error: configured credentials have invalid lengths");
+            memset(activeSsid, 0, sizeof(activeSsid));
+            memset(activePassword, 0, sizeof(activePassword));
+            return false;
+        }
+        activeCredentialsAvailable = true;
+        Serial.println("Wi-Fi: using firmware-configured credentials");
+        return true;
+    }
+
     Preferences preferences;
     if (!preferences.begin(WIFI_PREFERENCES_NAMESPACE, true)) {
         Serial.println("Wi-Fi error: failed to open credential storage");
@@ -91,35 +102,7 @@ bool loadWifiCredentials() {
         return true;
     }
 
-    const String configuredSsid = WIFI_SSID;
-    const String configuredPassword = WIFI_PASSWORD;
-    if (configuredSsid.isEmpty()) {
-        return false;
-    }
-    if (!copyCredential(activeSsid, sizeof(activeSsid), configuredSsid,
-                        MAX_SSID_LENGTH) ||
-        !copyCredential(activePassword, sizeof(activePassword),
-                        configuredPassword, MAX_PASSWORD_LENGTH)) {
-        Serial.println("Wi-Fi error: configured credentials have invalid lengths");
-        memset(activeSsid, 0, sizeof(activeSsid));
-        memset(activePassword, 0, sizeof(activePassword));
-        return false;
-    }
-    activeCredentialsAvailable = true;
-    return true;
-}
-
-bool persistWifiCredentials(const char* ssid, const char* password) {
-    Preferences preferences;
-    if (!preferences.begin(WIFI_PREFERENCES_NAMESPACE, false)) {
-        Serial.println("Wi-Fi error: failed to open credential storage");
-        return false;
-    }
-    const size_t savedSsid = preferences.putString("ssid", ssid);
-    const size_t savedPassword = preferences.putString("password", password);
-    preferences.end();
-    return savedSsid == strlen(ssid) + 1 &&
-           savedPassword == strlen(password) + 1;
+    return false;
 }
 
 void beginNetworkTimeSync() {
@@ -129,93 +112,6 @@ void beginNetworkTimeSync() {
     lastConnectedChannel = WiFi.channel();
 }
 
-void startCandidateConnection(const char* ssid, const char* password) {
-    snprintf(candidateSsid, sizeof(candidateSsid), "%s", ssid);
-    snprintf(candidatePassword, sizeof(candidatePassword), "%s", password);
-    candidateConnectionPending = true;
-    candidateConnectionStartedAt = millis();
-    lastConnectionAttempt = candidateConnectionStartedAt;
-
-    WiFi.disconnect(false, false);
-    WiFi.begin(candidateSsid, candidatePassword);
-    updateWifiProvisioningStatus(false, "connecting");
-    Serial.println("Wi-Fi provisioning: connection attempt started");
-}
-
-void finishCandidateConnection() {
-    const bool saved = persistWifiCredentials(candidateSsid, candidatePassword);
-    snprintf(activeSsid, sizeof(activeSsid), "%s", candidateSsid);
-    snprintf(activePassword, sizeof(activePassword), "%s", candidatePassword);
-    activeCredentialsAvailable = true;
-    memset(candidateSsid, 0, sizeof(candidateSsid));
-    memset(candidatePassword, 0, sizeof(candidatePassword));
-    candidateConnectionPending = false;
-    beginNetworkTimeSync();
-    updateWifiProvisioningStatus(
-        true, saved ? "connected" : "connected_not_saved");
-    if (!saved) {
-        Serial.println(
-            "Wi-Fi connected, but credentials could not be persisted");
-    } else {
-        Serial.printf("Wi-Fi connected, IP: %s, channel: %u\n",
-                      WiFi.localIP().toString().c_str(),
-                      lastConnectedChannel);
-    }
-    stopWifiProvisioningAdvertising();
-}
-
-void failCandidateConnection() {
-    memset(candidateSsid, 0, sizeof(candidateSsid));
-    memset(candidatePassword, 0, sizeof(candidatePassword));
-    candidateConnectionPending = false;
-    updateWifiProvisioningStatus(false, "connection_failed");
-    WiFi.disconnect(false, false);
-
-    if (activeCredentialsAvailable) {
-        Serial.println(
-            "Wi-Fi provisioning failed; retrying the previously saved network");
-        WiFi.begin(activeSsid, activePassword);
-        lastConnectionAttempt = millis();
-    } else {
-        setEspNowFallbackChannel();
-    }
-}
-
-void processProvisionedCredentials() {
-    char ssid[MAX_SSID_LENGTH + 1] = {};
-    char password[MAX_PASSWORD_LENGTH + 1] = {};
-    if (!takeProvisionedWifiCredentials(ssid, sizeof(ssid), password,
-                                        sizeof(password))) {
-        return;
-    }
-
-#if !CONTEST_MODE
-    Serial.println(
-        "Wi-Fi provisioning received credentials, but contest mode is disabled");
-    updateWifiProvisioningStatus(false, "wifi_disabled");
-    memset(ssid, 0, sizeof(ssid));
-    memset(password, 0, sizeof(password));
-#else
-    startCandidateConnection(ssid, password);
-    memset(ssid, 0, sizeof(ssid));
-    memset(password, 0, sizeof(password));
-#endif
-}
-
-void maintainCandidateConnection() {
-    if (!candidateConnectionPending) {
-        return;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        finishCandidateConnection();
-        return;
-    }
-    if (millis() - candidateConnectionStartedAt >= 15000) {
-        Serial.printf("Wi-Fi provisioning failed, status: %d\n",
-                      WiFi.status());
-        failCandidateConnection();
-    }
-}
 }
 
 bool setupWifi(unsigned long timeoutMs) {
@@ -228,7 +124,7 @@ bool setupWifi(unsigned long timeoutMs) {
 #else
     if (!loadWifiCredentials()) {
         Serial.println(
-            "Wi-Fi credentials are not configured; use BLE provisioning");
+            "Wi-Fi credentials are not configured");
         WiFi.disconnect(false, false);
         setEspNowFallbackChannel();
         return false;
@@ -261,17 +157,10 @@ bool setupWifi(unsigned long timeoutMs) {
 }
 
 void maintainWifiConnection(unsigned long retryIntervalMs) {
-    processProvisionedCredentials();
-    maintainWifiProvisioning();
 #if !CONTEST_MODE
     (void)retryIntervalMs;
     return;
 #else
-    maintainCandidateConnection();
-    if (candidateConnectionPending) {
-        return;
-    }
-
     if (WiFi.status() == WL_CONNECTED) {
         uint8_t currentChannel = WiFi.channel();
         if (currentChannel != lastConnectedChannel) {
