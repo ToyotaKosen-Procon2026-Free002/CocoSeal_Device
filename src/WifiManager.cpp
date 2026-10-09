@@ -6,6 +6,7 @@
 #include <time.h>
 #include <atomic>
 #include <Preferences.h>
+#include <stdio.h>
 
 #define ESP_NOW_FALLBACK_CHANNEL 1
 
@@ -29,17 +30,77 @@ constexpr char WIFI_PREFERENCES_NAMESPACE[] = "wifi_cfg";
 unsigned long lastConnectionAttempt = 0;
 bool networkTimeSyncConfigured = false;
 std::atomic<bool> networkTimeTrusted{false};
+bool wifiWasConnected = false;
 uint8_t lastConnectedChannel = 0;
 uint32_t lastTimeSyncDiagnostic = 0;
 char activeSsid[MAX_SSID_LENGTH + 1] = {};
 char activePassword[MAX_PASSWORD_LENGTH + 1] = {};
 bool activeCredentialsAvailable = false;
 
+bool getFirmwareBuildUnixTime(uint32_t& timestamp) {
+    char monthName[4] = {};
+    int day = 0;
+    int year = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (sscanf(__DATE__, "%3s %d %d", monthName, &day, &year) != 3 ||
+        sscanf(__TIME__, "%d:%d:%d", &hour, &minute, &second) != 3) {
+        return false;
+    }
+
+    static const char* const months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    int month = 0;
+    for (size_t i = 0; i < sizeof(months) / sizeof(months[0]); ++i) {
+        if (strncmp(monthName, months[i], sizeof(monthName)) == 0) {
+            month = static_cast<int>(i) + 1;
+            break;
+        }
+    }
+    if (month == 0 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 || second < 0 || second > 60) {
+        return false;
+    }
+
+    int adjustedYear = year - (month <= 2 ? 1 : 0);
+    int era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400;
+    unsigned yearOfEra = static_cast<unsigned>(adjustedYear - era * 400);
+    unsigned adjustedMonth = static_cast<unsigned>(
+        month + (month > 2 ? -3 : 9));
+    unsigned dayOfYear = (153 * adjustedMonth + 2) / 5 +
+                         static_cast<unsigned>(day - 1);
+    unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 -
+                        yearOfEra / 100 + dayOfYear;
+    int64_t daysSinceEpoch = static_cast<int64_t>(era) * 146097 +
+                             static_cast<int64_t>(dayOfEra) - 719468;
+    int64_t buildTimestamp = daysSinceEpoch * 86400 +
+                             hour * 3600 + minute * 60 + second;
+    if (buildTimestamp < 1735689600 ||
+        static_cast<uint64_t>(buildTimestamp) > UINT32_MAX) {
+        return false;
+    }
+    timestamp = static_cast<uint32_t>(buildTimestamp);
+    return true;
+}
+
 void setEspNowFallbackChannel() {
     esp_err_t result =
         esp_wifi_set_channel(ESP_NOW_FALLBACK_CHANNEL, WIFI_SECOND_CHAN_NONE);
     if (result != ESP_OK) {
         Serial.printf("Failed to set ESP-NOW fallback channel: %d\n", result);
+    }
+}
+
+void onNetworkTimeSynchronized(struct timeval* timeValue) {
+    time_t synchronizedTime = timeValue
+                                  ? timeValue->tv_sec
+                                  : time(nullptr);
+    if (synchronizedTime >= 1735689600 &&
+        static_cast<uint64_t>(synchronizedTime) <= UINT32_MAX) {
+        networkTimeTrusted.store(true);
     }
 }
 
@@ -106,10 +167,11 @@ bool loadWifiCredentials() {
 }
 
 void beginNetworkTimeSync() {
-    networkTimeTrusted.store(false);
+    sntp_set_time_sync_notification_cb(onNetworkTimeSynchronized);
     configTzTime("JST-9", "pool.ntp.org", "time.google.com");
     networkTimeSyncConfigured = true;
     lastConnectedChannel = WiFi.channel();
+    Serial.println("Network time synchronization started (JST)");
 }
 
 }
@@ -142,6 +204,7 @@ bool setupWifi(unsigned long timeoutMs) {
 
     if (WiFi.status() == WL_CONNECTED) {
         beginNetworkTimeSync();
+        wifiWasConnected = true;
         Serial.printf("Wi-Fi connected, IP: %s, channel: %u\n",
                       WiFi.localIP().toString().c_str(),
                       lastConnectedChannel);
@@ -149,6 +212,7 @@ bool setupWifi(unsigned long timeoutMs) {
     }
 
     Serial.printf("Wi-Fi connection failed, status: %d\n", WiFi.status());
+    wifiWasConnected = false;
     WiFi.disconnect(false, false);
     delay(100);
     setEspNowFallbackChannel();
@@ -162,6 +226,8 @@ void maintainWifiConnection(unsigned long retryIntervalMs) {
     return;
 #else
     if (WiFi.status() == WL_CONNECTED) {
+        bool justConnected = !wifiWasConnected;
+        wifiWasConnected = true;
         uint8_t currentChannel = WiFi.channel();
         if (currentChannel != lastConnectedChannel) {
             lastConnectedChannel = currentChannel;
@@ -169,14 +235,13 @@ void maintainWifiConnection(unsigned long retryIntervalMs) {
                 "Wi-Fi channel changed to %u; ESP-NOW follows current channel\n",
                 currentChannel);
         }
-        if (!networkTimeSyncConfigured) {
-            networkTimeTrusted.store(false);
-            configTzTime("JST-9", "pool.ntp.org", "time.google.com");
-            networkTimeSyncConfigured = true;
-            Serial.println("Network time synchronization started (JST)");
+        if ((!networkTimeSyncConfigured || justConnected) &&
+            !networkTimeTrusted.load()) {
+            beginNetworkTimeSync();
         }
         return;
     }
+    wifiWasConnected = false;
 
     unsigned long currentMillis = millis();
     if (currentMillis - lastConnectionAttempt < retryIntervalMs) {
@@ -257,4 +322,12 @@ bool getTrustedUnixTime(uint32_t& timestamp) {
 
     timestamp = static_cast<uint32_t>(now);
     return true;
+}
+
+bool getSosSigningUnixTime(uint32_t& timestamp, bool& isTrusted) {
+    isTrusted = getTrustedUnixTime(timestamp);
+    if (isTrusted) {
+        return true;
+    }
+    return getFirmwareBuildUnixTime(timestamp);
 }

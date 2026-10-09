@@ -64,4 +64,5 @@ bool isSynchronizedEncounterDisplayPending();
 void processEspNowDisplayEvents();
 void sendEncounterAnnouncement();
 void sendSosNotification();
+void processPendingSosNotification();
 void setEspNowStatus(EspNowStatus status);

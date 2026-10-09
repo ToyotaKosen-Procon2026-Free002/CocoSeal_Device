@@ -433,6 +433,7 @@ void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
   maintainWifiConnection();
+  processPendingSosNotification();
   processQueuedLocalEvents();
 #if !CONTEST_MODE
   static unsigned long lastGatewayRewardProcess = 0;

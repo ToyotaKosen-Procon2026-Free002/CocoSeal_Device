@@ -12,6 +12,7 @@ constexpr size_t DEVICE_ID_LENGTH = 36;
 constexpr size_t PRIVATE_KEY_LENGTH = 32;
 constexpr size_t PUBLIC_KEY_LENGTH = 65;
 constexpr size_t SHA256_LENGTH = 32;
+constexpr size_t P256_MAX_DER_SIGNATURE_LENGTH = 72;
 
 char deviceId[DEVICE_ID_LENGTH + 1] = {};
 uint8_t privateKey[PRIVATE_KEY_LENGTH] = {};
@@ -189,7 +190,7 @@ bool signDeviceMessage(const uint8_t* message,
                        size_t& signatureLength) {
     signatureLength = 0;
     if (!identityReady || !message || !signature ||
-        signatureCapacity < MBEDTLS_ECDSA_MAX_LEN) {
+        signatureCapacity < P256_MAX_DER_SIGNATURE_LENGTH) {
         return false;
     }
 

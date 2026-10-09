@@ -53,6 +53,8 @@ PeerName peerNames[PEER_NAME_CACHE_SIZE] = {};
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 char localDeviceName[37] = "";
 bool localDeviceNameAvailable = false;
+bool pendingSosNotification = false;
+uint32_t lastPendingSosRetryAt = 0;
 char scheduledPeerDeviceId[37] = "";
 uint32_t synchronizedDisplayAt = 0;
 bool synchronizedDisplayPending = false;
@@ -197,8 +199,15 @@ bool makeSignedSosPacket(GatewaySosCommunicationPacket& packet) {
     packet = {};
     packet.packet = makePacket(MESSAGE_TYPE_SOS);
     generateUuid(packet.event_id, sizeof(packet.event_id));
-    if (!getTrustedUnixTime(packet.trigger_timestamp)) {
+    bool timestampIsTrusted = false;
+    if (!getSosSigningUnixTime(packet.trigger_timestamp,
+                               timestampIsTrusted)) {
+        Serial.println("SOS signing error: no usable timestamp is available");
         return false;
+    }
+    if (!timestampIsTrusted) {
+        Serial.println(
+            "SOS signing: using firmware build time as provisional timestamp");
     }
 
     char lowerDeviceId[sizeof(packet.packet.device_id)];
@@ -230,6 +239,25 @@ bool makeSignedSosPacket(GatewaySosCommunicationPacket& packet) {
         return false;
     }
     packet.signature_length = static_cast<uint8_t>(signatureLength);
+    return true;
+}
+
+bool sendSignedSosPacket() {
+    GatewaySosCommunicationPacket packet = {};
+    if (!makeSignedSosPacket(packet)) {
+        return false;
+    }
+
+    Serial.println("Sending signed SOS event to gateway over ESP-NOW");
+    setEspNowStatus(ESP_NOW_SENDING);
+    esp_err_t result = esp_now_send(
+        broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
+        sizeof(packet));
+    if (result != ESP_OK) {
+        Serial.printf("ESP-NOW signed SOS send failed: %d\n", result);
+        setEspNowStatus(ESP_NOW_SEND_FAILED);
+        return false;
+    }
     return true;
 }
 
@@ -462,22 +490,24 @@ void sendEncounterAnnouncement() {
 
 void sendSosNotification() {
     sendNameAnnouncement();
-    GatewaySosCommunicationPacket packet = {};
-    if (makeSignedSosPacket(packet)) {
-        Serial.println("Sending signed SOS event to gateway over ESP-NOW");
-        setEspNowStatus(ESP_NOW_SENDING);
-        esp_err_t result = esp_now_send(
-            broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
-            sizeof(packet));
-        if (result != ESP_OK) {
-            Serial.printf("ESP-NOW signed SOS send failed: %d\n", result);
-            setEspNowStatus(ESP_NOW_SEND_FAILED);
-        }
+    pendingSosNotification = true;
+    lastPendingSosRetryAt = 0;
+    processPendingSosNotification();
+}
+
+void processPendingSosNotification() {
+    if (!pendingSosNotification) {
         return;
     }
 
-    CommunicationPacket localAlertPacket = makePacket(MESSAGE_TYPE_SOS);
-    Serial.println(
-        "Could not create API-signed SOS; sending unsigned local alert");
-    sendPacket(localAlertPacket);
+    uint32_t now = millis();
+    if (lastPendingSosRetryAt != 0 &&
+        now - lastPendingSosRetryAt < 1000) {
+        return;
+    }
+    lastPendingSosRetryAt = now;
+
+    if (sendSignedSosPacket()) {
+        pendingSosNotification = false;
+    }
 }
