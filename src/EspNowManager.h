@@ -19,15 +19,6 @@ struct NameAnnouncementPacket {
     char name[20];
 };
 
-struct SosCommunicationPacket {
-    CommunicationPacket packet;
-    char event_id[37];
-    uint8_t reserved[3];
-    uint32_t trigger_timestamp;
-    uint8_t signature[80];
-    uint8_t signature_length;
-};
-
 static_assert(sizeof(int) == 4, "Parent protocol requires 32-bit int");
 static_assert(offsetof(CommunicationPacket, type) == 40,
               "CommunicationPacket layout mismatch");
@@ -43,14 +34,6 @@ static_assert(offsetof(NameAnnouncementPacket, name) == 44,
               "Name announcement protocol layout mismatch");
 static_assert(sizeof(NameAnnouncementPacket) == 64,
               "Name announcement must remain compatible with 64-byte ESP-NOW frames");
-static_assert(offsetof(SosCommunicationPacket, event_id) == 64,
-              "SOS event ID must follow the 64-byte parent packet");
-static_assert(offsetof(SosCommunicationPacket, trigger_timestamp) == 104,
-              "SOS timestamp protocol offset mismatch");
-static_assert(offsetof(SosCommunicationPacket, signature) == 108,
-              "SOS signature protocol offset mismatch");
-static_assert(sizeof(SosCommunicationPacket) == 192,
-              "SOS packet layout mismatch");
 
 enum EspNowStatus {
     ESP_NOW_WAITING,
