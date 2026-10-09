@@ -8,7 +8,8 @@
 #include <WiFi.h>
 #include <esp_system.h>
 
-#define COOL_DOWN_TIME 30000
+#define CHILD_ENCOUNTER_COOLDOWN_MS 30000
+#define GATEWAY_ENCOUNTER_COOLDOWN_MS 30000
 #define ENCOUNTER_HISTORY_SIZE 10
 #define MESSAGE_TYPE_ENCOUNTER 0
 #define MESSAGE_TYPE_SOS 1
@@ -124,11 +125,12 @@ const char* findPeerName(const char* deviceId) {
     return "";
 }
 
-bool isInCooldown(const uint8_t *macAddr, unsigned long now) {
+bool isInCooldown(const uint8_t *macAddr, unsigned long now,
+                  uint32_t cooldownMs) {
     for (const EncounterHistory& history : recentHistory) {
         if (history.occupied &&
             memcmp(history.macAddr, macAddr, sizeof(history.macAddr)) == 0 &&
-            now - history.lastTradeTime < COOL_DOWN_TIME) {
+            now - history.lastTradeTime < cooldownMs) {
             return true;
         }
     }
@@ -320,7 +322,10 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     }
 
     unsigned long now = millis();
-    if (isInCooldown(macAddr, now)) {
+    uint32_t cooldownMs = packet.isGateway
+                              ? GATEWAY_ENCOUNTER_COOLDOWN_MS
+                              : CHILD_ENCOUNTER_COOLDOWN_MS;
+    if (isInCooldown(macAddr, now, cooldownMs)) {
         return;
     }
     recordEncounter(macAddr, now);

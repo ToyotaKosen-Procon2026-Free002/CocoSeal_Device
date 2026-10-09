@@ -109,7 +109,10 @@ void displayEncounter(EncounterSource source,
                       const char* peerName,
                       const char* peerDeviceId) {
     if (source == ENCOUNTER_SOURCE_PARENT) {
-        const char* lines[] = {"こうばん", "をとおったよ"};
+        const char* lines[] = {
+            peerName && peerName[0] ? peerName : "スポット名",
+            "をとおったよ"
+        };
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     } else if (peerName && peerName[0]) {
         const char* lines[] = {peerName, "とすれちがい"};
