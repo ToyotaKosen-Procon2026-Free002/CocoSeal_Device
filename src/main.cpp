@@ -3,12 +3,24 @@
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
 #include "DisplayManager.h"
+#include "BatteryManager.h"
+#include "DeviceIdentity.h"
 #include "EspNowManager.h"
+#include "LocalDatabase.h"
+#include "SealInventory.h"
+#include "ServerSync.h"
+#include "TradeProtocol.h"
 #include "WifiManager.h"
+#include "WifiProvisioning.h"
 #include <esp32_e220900t22s_jp_lib.h>
-#include <NimBLEDevice.h>
+#include <esp_attr.h>
+#include <esp_system.h>
 
-#define SERVICE_UUID "42fbd1f2-b02c-1ba6-87f8-7d9ca4f3a343"
+#ifndef SERVER_SYNC_RUNTIME_ENABLED
+#define SERVER_SYNC_RUNTIME_ENABLED 1
+#endif
+
+SET_LOOP_TASK_STACK_SIZE(16384);
 
 #define RED_LED_PIN 2
 #define GREEN_LED_PIN 8
@@ -17,10 +29,6 @@
 #define BUTTON_2_PIN 9
 
 #define BUZZER_PIN 3
-
-#define BATTERY_PIN 0
-#define BATTERY_100_VOLT_HALF 4.2 / 2
-#define BATTERY_0_VOLT_HALF 3.2 / 2
 
 #define LCD_SCK_PIN 4
 #define LCD_SDA_PIN 5
@@ -39,27 +47,76 @@ CLoRa lora;
 struct LoRaConfigItem_t config;
 struct RecvFrameE220900T22SJP_t data;
 
-NimBLEAdvertising *pAdvertising;
-NimBLEScan *pScan;
-volatile bool bleFlag = false;
 volatile bool sosReceivedLoRa = false;
-int lastRSSI;
-std::string lastBLEMac;
 bool isAlarmActive = false;
 int sosCount = 0;
 
-class ScanCallbacks : public NimBLEScanCallbacks {
-  void onResult(const NimBLEAdvertisedDevice *device) override {
-    if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-      int rssi = device->getRSSI();
-      std::string addr = device->getAddress().toString();
+namespace {
+constexpr uint32_t BOOT_DIAGNOSTIC_MAGIC = 0x424F4F54;
 
-      lastRSSI = rssi;
-      lastBLEMac = addr;
-      bleFlag = true;
-    }
-  }
+enum BootStage : uint32_t {
+  BOOT_STAGE_SERIAL = 1,
+  BOOT_STAGE_MUTEX,
+  BOOT_STAGE_I2C,
+  BOOT_STAGE_OLED,
+  BOOT_STAGE_DISPLAY_SETUP,
+  BOOT_STAGE_GPIO,
+  BOOT_STAGE_DEVICE_IDENTITY,
+  BOOT_STAGE_LOCAL_DATABASE,
+  BOOT_STAGE_SEAL_INVENTORY,
+  BOOT_STAGE_TEST_SEALS,
+  BOOT_STAGE_TRADE_PROTOCOL,
+  BOOT_STAGE_LORA_CONFIG,
+  BOOT_STAGE_LORA_INIT,
+  BOOT_STAGE_LORA_TASK,
+  BOOT_STAGE_WIFI,
+  BOOT_STAGE_ESPNOW,
+  BOOT_STAGE_COMPLETE
 };
+
+RTC_DATA_ATTR uint32_t previousBootDiagnosticMagic = 0;
+RTC_DATA_ATTR uint32_t previousBootDiagnosticStage = 0;
+RTC_DATA_ATTR bool previousBootDiagnosticCompleted = false;
+
+const char* bootStageName(uint32_t stage) {
+  switch (stage) {
+    case BOOT_STAGE_SERIAL: return "serial";
+    case BOOT_STAGE_MUTEX: return "mutex";
+    case BOOT_STAGE_I2C: return "I2C";
+    case BOOT_STAGE_OLED: return "OLED initialization";
+    case BOOT_STAGE_DISPLAY_SETUP: return "display setup";
+    case BOOT_STAGE_GPIO: return "GPIO setup";
+    case BOOT_STAGE_DEVICE_IDENTITY: return "device identity";
+    case BOOT_STAGE_LOCAL_DATABASE: return "local event database";
+    case BOOT_STAGE_SEAL_INVENTORY: return "seal inventory";
+    case BOOT_STAGE_TEST_SEALS: return "test seal inventory";
+    case BOOT_STAGE_TRADE_PROTOCOL: return "trade protocol";
+    case BOOT_STAGE_LORA_CONFIG: return "LoRa configuration";
+    case BOOT_STAGE_LORA_INIT: return "LoRa initialization";
+    case BOOT_STAGE_LORA_TASK: return "LoRa receive task";
+    case BOOT_STAGE_WIFI: return "Wi-Fi";
+    case BOOT_STAGE_ESPNOW: return "ESP-NOW";
+    case BOOT_STAGE_COMPLETE: return "setup complete";
+    default: return "unknown";
+  }
+}
+
+void beginBootStep(BootStage stage) {
+  previousBootDiagnosticMagic = BOOT_DIAGNOSTIC_MAGIC;
+  previousBootDiagnosticStage = static_cast<uint32_t>(stage);
+  previousBootDiagnosticCompleted = false;
+  Serial.printf("BOOT STEP BEGIN: %s\n", bootStageName(stage));
+  Serial.flush();
+}
+
+void completeBootStep(BootStage stage) {
+  previousBootDiagnosticMagic = BOOT_DIAGNOSTIC_MAGIC;
+  previousBootDiagnosticStage = static_cast<uint32_t>(stage);
+  previousBootDiagnosticCompleted = true;
+  Serial.printf("BOOT STEP DONE: %s\n", bootStageName(stage));
+  Serial.flush();
+}
+}
 
 void LoRaRecvTask(void *pvParameters) {
   while (1) {
@@ -101,12 +158,21 @@ void LoRaSendTask() {
   if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
     display.clearDisplay();
     display.setCursor(0, 0);
-    String msg = "SOS !!";
+    const char* deviceId = getDeviceId();
+    char msg[42];
+    int msgLength = deviceId && deviceId[0]
+                        ? snprintf(msg, sizeof(msg), "SOS:%s\n", deviceId)
+                        : -1;
 
-    if (lora.SendFrame(config, (uint8_t *)msg.c_str(), strlen(msg.c_str())) == 0) {
+    if (msgLength > 0 && msgLength < static_cast<int>(sizeof(msg)) &&
+        lora.SendFrame(config, reinterpret_cast<uint8_t*>(msg),
+                       static_cast<size_t>(msgLength)) == 0) {
       display.printf("send succeeded.\n");
       display.printf("\n");
     } else {
+      if (msgLength <= 0 || msgLength >= static_cast<int>(sizeof(msg))) {
+        Serial.println("LoRa SOS error: invalid device ID or payload length");
+      }
       display.printf("send failed.\n");
       display.printf("\n");
     }
@@ -132,14 +198,69 @@ void resetSosAlarm() {
   digitalWrite(RED_LED_PIN, HIGH);
 }
 
+void displayBootStatus(const char *message) {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println(message);
+  display.display();
+}
+
+const char *getResetReasonName(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_UNKNOWN: return "UNKNOWN";
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXTERNAL";
+    case ESP_RST_SW: return "SOFTWARE";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT WATCHDOG";
+    case ESP_RST_TASK_WDT: return "TASK WATCHDOG";
+    case ESP_RST_WDT: return "WATCHDOG";
+    case ESP_RST_DEEPSLEEP: return "DEEP SLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "OTHER";
+  }
+}
+
 void setup() {
+  uint32_t lastBootStage = previousBootDiagnosticStage;
+  bool hasPreviousBootDiagnostic =
+      previousBootDiagnosticMagic == BOOT_DIAGNOSTIC_MAGIC;
+  bool previousBootStageCompleted = previousBootDiagnosticCompleted;
+  previousBootDiagnosticMagic = BOOT_DIAGNOSTIC_MAGIC;
+  previousBootDiagnosticStage = BOOT_STAGE_SERIAL;
+  previousBootDiagnosticCompleted = false;
   Serial.begin(115200);
+  Serial.println("BOOT STEP BEGIN: serial");
+  Serial.flush();
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  delay(1000);
+  if (hasPreviousBootDiagnostic) {
+    Serial.printf("Boot diagnostic: previous reset at '%s' (%s)\n",
+                  bootStageName(lastBootStage),
+                  previousBootStageCompleted ? "step completed" :
+                                                "step was in progress");
+  } else {
+    Serial.println("Boot diagnostic: no previous application stage recorded");
+  }
+  completeBootStep(BOOT_STAGE_SERIAL);
+  logPreviousServerSyncDiagnostic();
+  Serial.printf("Boot: reset reason %d (%s)\n",
+                static_cast<int>(resetReason),
+                getResetReasonName(resetReason));
 
+  beginBootStep(BOOT_STAGE_MUTEX);
   lcdMutex = xSemaphoreCreateMutex();
+  completeBootStep(BOOT_STAGE_MUTEX);
 
+  beginBootStep(BOOT_STAGE_I2C);
   Serial.println("Boot: initializing OLED");
   Wire.begin(LCD_SDA_PIN, LCD_SCK_PIN);
+  completeBootStep(BOOT_STAGE_I2C);
 
+  beginBootStep(BOOT_STAGE_OLED);
   uint8_t oledAddress = 0;
   const uint8_t oledAddresses[] = {0x3C, 0x3D};
   for (uint8_t address : oledAddresses) {
@@ -154,10 +275,21 @@ void setup() {
     while (true);
   }
   Serial.printf("Boot: OLED initialized at 0x%02X\n", oledAddress);
+  completeBootStep(BOOT_STAGE_OLED);
+
+  beginBootStep(BOOT_STAGE_DISPLAY_SETUP);
+  displayBootStatus("Starting device...");
   initializeJapaneseDisplay();
   display.clearDisplay();
   display.display();
+  displayBootStatus("Reset reason:");
+  display.setCursor(0, 12);
+  display.println(getResetReasonName(resetReason));
+  display.display();
+  delay(3000);
+  completeBootStep(BOOT_STAGE_DISPLAY_SETUP);
 
+  beginBootStep(BOOT_STAGE_GPIO);
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
   digitalWrite(RED_LED_PIN, HIGH);
@@ -168,62 +300,129 @@ void setup() {
 
   pinMode(BUZZER_PIN, OUTPUT);
 
-  pinMode(BATTERY_PIN, INPUT);
-  analogSetAttenuation(ADC_11db);
-  analogReadResolution(12);
+  initializeBatteryMonitor();
+  completeBootStep(BOOT_STAGE_GPIO);
+
+  beginBootStep(BOOT_STAGE_DEVICE_IDENTITY);
+  Serial.println("Boot: initializing device identity");
+  displayBootStatus("Checking device identity...");
+  if (!initializeDeviceIdentity()) {
+    Serial.println("Boot error: device identity initialization failed");
+    displayBootStatus("BOOT ERROR: ID / key");
+    while (true) {
+      delay(1000);
+    }
+  }
+  Serial.printf("Child UUID: %s\n", getDeviceId());
+  completeBootStep(BOOT_STAGE_DEVICE_IDENTITY);
+
+  beginBootStep(BOOT_STAGE_LOCAL_DATABASE);
+  Serial.println("Boot: initializing local event database");
+  displayBootStatus("Checking event storage...");
+  if (!initializeLocalDatabase()) {
+    Serial.println("Boot error: local event database initialization failed");
+    displayBootStatus("BOOT ERROR: event DB");
+    while (true) {
+      delay(1000);
+    }
+  }
+  completeBootStep(BOOT_STAGE_LOCAL_DATABASE);
+
+  beginBootStep(BOOT_STAGE_SEAL_INVENTORY);
+  Serial.println("Boot: initializing seal inventory");
+  displayBootStatus("Checking seal storage...");
+  if (!initializeSealInventory()) {
+    Serial.println("Boot error: seal inventory initialization failed");
+    displayBootStatus("BOOT ERROR: seal DB");
+    while (true) {
+      delay(1000);
+    }
+  }
+  completeBootStep(BOOT_STAGE_SEAL_INVENTORY);
+
+  beginBootStep(BOOT_STAGE_TEST_SEALS);
+  if (!initializeTestSealInventory()) {
+    Serial.println("Boot error: test seal initialization failed");
+    displayBootStatus("BOOT ERROR: test seals");
+    while (true) {
+      delay(1000);
+    }
+  }
+  completeBootStep(BOOT_STAGE_TEST_SEALS);
+
+  beginBootStep(BOOT_STAGE_TRADE_PROTOCOL);
+  Serial.println("Boot: initializing trade protocol");
+  displayBootStatus("Checking trade state...");
+  if (!initializeTradeProtocol()) {
+    const char *tradeError = getTradeProtocolInitError();
+    Serial.printf("Boot warning: trade protocol disabled (%s)\n", tradeError);
+    displayBootStatus("Trade disabled:");
+    display.setCursor(0, 12);
+    display.println(tradeError);
+    display.display();
+    delay(2000);
+  }
+  completeBootStep(BOOT_STAGE_TRADE_PROTOCOL);
 
   delay(10);
 
+  beginBootStep(BOOT_STAGE_LORA_CONFIG);
   Serial.println("Boot: initializing LoRa");
+  displayBootStatus("Initializing LoRa...");
   lora.SetDefaultConfigValue(config);
+  completeBootStep(BOOT_STAGE_LORA_CONFIG);
+
+  beginBootStep(BOOT_STAGE_LORA_INIT);
   while (lora.InitLoRaModule(config)) {
     Serial.println("Boot: LoRa init retry");
     delay(100);
   }
   Serial.println("Boot: LoRa initialized");
+  completeBootStep(BOOT_STAGE_LORA_INIT);
 
+  beginBootStep(BOOT_STAGE_LORA_TASK);
   lora.SwitchToNormalMode();
-
-  xTaskCreateUniversal(LoRaRecvTask, "LoRaRecvTask", 8192, NULL, 1, NULL, 0);
+  BaseType_t loraTaskCreated =
+      xTaskCreateUniversal(LoRaRecvTask, "LoRaRecvTask", 8192, NULL, 1, NULL, 0);
+  if (loraTaskCreated != pdPASS) {
+    Serial.println("Boot error: failed to create LoRa receive task");
+  }
+  completeBootStep(BOOT_STAGE_LORA_TASK);
 
   delay(10);
 
-  Serial.println("Boot: initializing ESP-NOW");
-  setupEspNow();
+  beginBootStep(BOOT_STAGE_WIFI);
   Serial.println("Boot: connecting to Wi-Fi");
+  displayBootStatus("Connecting Wi-Fi...");
   setupWifi();
-  if (isWifiConnected() && WiFi.channel() != 1) {
-    Serial.printf(
-        "Warning: router channel %u differs from parent ESP-NOW channel 1\n",
-        WiFi.channel());
+  if (isWifiConnected()) {
+    Serial.printf("Contest mode active; ESP-NOW will share Wi-Fi channel %u\n",
+                  WiFi.channel());
+  } else {
+    Serial.println("ESP-NOW will use offline fallback channel 1");
   }
-  Serial.println("Boot: initializing BLE");
+  completeBootStep(BOOT_STAGE_WIFI);
 
-  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-  NimBLEDevice::init("ESP_NODE");
-  
-  pAdvertising = NimBLEDevice::getAdvertising();
-  NimBLEAdvertisementData advData;
-  advData.setName("ESP_NODE");
-  advData.addServiceUUID(SERVICE_UUID);
-  pAdvertising->setAdvertisementData(advData);
-  pAdvertising->start();
+  beginBootStep(BOOT_STAGE_ESPNOW);
+  Serial.println("Boot: initializing ESP-NOW");
+  displayBootStatus("Initializing ESP-NOW...");
+  setupEspNow();
+  completeBootStep(BOOT_STAGE_ESPNOW);
 
-  pScan = NimBLEDevice::getScan();
-  pScan->setActiveScan(true);
-  pScan->setInterval(100);
-  pScan->setWindow(30);
-  pScan->setScanCallbacks(new ScanCallbacks(), true);
-  pScan->start(0, false, true);
+  beginBootStep(BOOT_STAGE_COMPLETE);
   Serial.println("Boot: setup complete");
+#if SERVER_SYNC_RUNTIME_ENABLED
+  Serial.println("Server sync runtime: enabled");
+  Serial.println(
+      "BOOT: own device name will be printed after server profile is loaded");
+#else
+  Serial.println("Server sync runtime: disabled for diagnosis");
+  Serial.println("BOOT: own device name unavailable (server sync disabled)");
+#endif
+  displayBootStatus("Ready");
+  completeBootStep(BOOT_STAGE_COMPLETE);
 }
   
-
-float getBatteryPercent() {
-  int millivolt = analogReadMilliVolts(BATTERY_PIN);
-  float percent = (millivolt - BATTERY_0_VOLT_HALF * 1000) / (BATTERY_100_VOLT_HALF * 1000 - BATTERY_0_VOLT_HALF * 1000);
-  return percent * 100.0;
-}
 
 int lastBtn1State = HIGH;         // ボタン1の以前の状態
 unsigned long lastPressTime = 0;  // 最後にボタン1が押された時間
@@ -232,14 +431,93 @@ void loop() {
   unsigned long currentMillis = millis();   // 現在の時刻を取得
 
   maintainWifiConnection();
-
+  processQueuedLocalEvents();
+#if !CONTEST_MODE
+  static unsigned long lastGatewayRewardProcess = 0;
+  if (currentMillis - lastGatewayRewardProcess >= 5000) {
+    lastGatewayRewardProcess = currentMillis;
+    uint32_t localDateKey = 0;
+    LocalEvent gatewayEncounter = {};
+    if (getNextPendingGatewayEncounter(gatewayEncounter)) {
+      if (!gatewayEncounter.stickerId[0]) {
+        Serial.printf("Skipping gateway encounter without sticker: %s\n",
+                      gatewayEncounter.eventId);
+        markGatewayRewardProcessed(gatewayEncounter.eventId);
+      } else if (getTrustedLocalDateKey(localDateKey) &&
+                 awardGatewaySealOncePerDay(gatewayEncounter.partnerDeviceId,
+                                            gatewayEncounter.stickerId,
+                                            localDateKey)) {
+        if (!markGatewayRewardProcessed(gatewayEncounter.eventId)) {
+          Serial.println("Warning: gateway reward state was not finalized");
+        }
+      }
+    }
+  }
+#endif
+  processTradeProtocol();
+  processEspNowDisplayEvents();
+  static bool tradeDebugVisible = false;
+  static unsigned long tradeDebugHideAt = 0;
+  static bool tradeOutcomePending = false;
+  static unsigned long tradeOutcomeDisplayAt = 0;
+  static char pendingTradeOutcome[64] = {};
+  static bool encounterSequenceActive = false;
+  static bool parentEncounterIntro = false;
+  static unsigned long encounterScreenUntil = 0;
+  char tradeStatus[64];
+  bool currentTradeInProgress = false;
+  if (takeTradeDebugStatus(tradeStatus, sizeof(tradeStatus),
+                           currentTradeInProgress)) {
+    if (!currentTradeInProgress) {
+      snprintf(pendingTradeOutcome, sizeof(pendingTradeOutcome), "%s",
+               tradeStatus);
+      tradeOutcomePending = true;
+      tradeOutcomeDisplayAt = currentMillis + 1200;
+    }
+  }
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;
+  static bool button2WasPressed = false;
+  static bool button2StartedDuringAlarm = false;
+  static bool button2ProvisioningHandled = false;
+  static uint32_t button2PressedAt = 0;
+
+  if (resetPressed && !button2WasPressed) {
+    button2PressedAt = currentMillis;
+    button2StartedDuringAlarm = wasAlarmActive;
+    button2ProvisioningHandled = false;
+  }
+  if (resetPressed && !button2StartedDuringAlarm &&
+      !button2ProvisioningHandled &&
+      currentMillis - button2PressedAt >= 2000) {
+    button2ProvisioningHandled = true;
+    if (startWifiProvisioning(getDeviceId(), isWifiConnected())) {
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        displayBootStatus("BLE Wi-Fi setup active");
+        display.setCursor(0, 16);
+        display.println("Open CocoSeal app");
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    } else {
+      Serial.println("BLE Wi-Fi provisioning could not be started");
+    }
+  }
+  if (!resetPressed) {
+    button2WasPressed = false;
+    button2StartedDuringAlarm = false;
+    button2ProvisioningHandled = false;
+    button2PressedAt = 0;
+  } else {
+    button2WasPressed = true;
+  }
 
   if (!resetPressed && (sosReceivedEspNow || sosReceivedLoRa)) {
     sosReceivedEspNow = false;
     sosReceivedLoRa = false;
     isAlarmActive = true;
+    encounterSequenceActive = false;
+    tradeDebugVisible = false;
     displaySOSReceived();
   }
   if (resetPressed) {
@@ -253,19 +531,78 @@ void loop() {
 
   static unsigned long displayClearTime = 0;
   static bool needDisplayClear = false;
+
   // すれ違い結果の画面表示
-  if (encounterFlag) {
+  if (encounterFlag && !isAlarmActive) {
     encounterFlag = false;
+    encounterSequenceActive = true;
+    parentEncounterIntro = lastEncounterWasParent;
+    encounterScreenUntil = currentMillis + 3000;
+    tradeDebugVisible = false;
+    needDisplayClear = false;
+    displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
+                                            : ENCOUNTER_SOURCE_CHILD,
+                     displayPeerName,
+                     displayPeerDeviceId);
+  }
 
-    // SOS発動中でなければ表示する
-    if (!isAlarmActive) {
-      displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
-                                              : ENCOUNTER_SOURCE_CHILD,
-                       displayStickerId);
+  if (encounterSequenceActive &&
+      static_cast<int32_t>(currentMillis - encounterScreenUntil) >= 0 &&
+      !isAlarmActive) {
+    if (parentEncounterIntro) {
+      parentEncounterIntro = false;
+      displayParentEncounterReward();
+      encounterScreenUntil = currentMillis + 3000;
+    } else {
+      encounterSequenceActive = false;
+      if (tradeOutcomePending) {
+        tradeOutcomeDisplayAt = currentMillis;
+      } else if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        display.clearDisplay();
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    }
+  }
 
-      // 5秒後に画面をクリアするためのタイマーをセット
-      displayClearTime = currentMillis + 5000;
-      needDisplayClear = true;
+  if (tradeOutcomePending &&
+      static_cast<int32_t>(currentMillis - tradeOutcomeDisplayAt) >= 0 &&
+      !encounterSequenceActive && !isAlarmActive) {
+    tradeOutcomePending = false;
+
+    // ステータスが "COMPLETE:" から始まっていれば成功とみなす
+    if (strncmp(pendingTradeOutcome, "COMPLETE:", 9) == 0) {
+        tradeDebugVisible = true;
+        tradeDebugHideAt = currentMillis + 3000;
+        displayTradeSuccess();  // 成功画面を表示
+        displayClearTime = tradeDebugHideAt;
+        needDisplayClear = true;
+    } else {
+        // 失敗時は何も表示しない
+        if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+            display.clearDisplay();
+            display.display();
+            xSemaphoreGive(lcdMutex);
+        }
+      }
+  }
+
+#if SERVER_SYNC_RUNTIME_ENABLED
+  if (!isSynchronizedEncounterDisplayPending() &&
+      !needDisplayClear && !tradeOutcomePending &&
+      !encounterSequenceActive) {
+    processServerSync();
+  }
+#endif
+
+  if (tradeDebugVisible &&
+      static_cast<int32_t>(currentMillis - tradeDebugHideAt) >= 0 &&
+      !isAlarmActive && !encounterSequenceActive && !encounterFlag) {
+    tradeDebugVisible = false;
+    if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+      display.clearDisplay();
+      display.display();
+      xSemaphoreGive(lcdMutex);
     }
   }
 
@@ -273,11 +610,7 @@ void loop() {
   static unsigned long lastSendTime = 0;
   if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
     lastSendTime = currentMillis;
-    sendDummySticker();
-  }
-
-  if (bleFlag) {
-    bleFlag = false;
+    sendEncounterAnnouncement();
   }
 
   int currentBtn1State = digitalRead(BUTTON_1_PIN);
@@ -306,7 +639,7 @@ void loop() {
   lastBtn1State = currentBtn1State;
 
   if (resetPressed) {
-    if (!wasAlarmActive) {
+    if (!wasAlarmActive && !button2ProvisioningHandled) {
       displayBattery(getBatteryPercent());
 
       // 5秒後に画面をクリアするためのタイマーをセット
@@ -346,5 +679,8 @@ void loop() {
   digitalWrite(RED_LED_PIN, outRedLed);
   digitalWrite(GREEN_LED_PIN, outGreenLed);
 
-  delay(100);
+  delay(isSynchronizedEncounterDisplayPending() || tradeOutcomePending ||
+                encounterSequenceActive
+            ? 20
+            : 100);
 }
