@@ -11,6 +11,7 @@
 #include "ServerSync.h"
 #include "TradeProtocol.h"
 #include "WifiManager.h"
+#include "WifiProvisioning.h"
 #include <esp32_e220900t22s_jp_lib.h>
 #include <esp_attr.h>
 #include <esp_system.h>
@@ -476,6 +477,40 @@ void loop() {
   }
   bool resetPressed = digitalRead(BUTTON_2_PIN) == LOW;
   bool wasAlarmActive = isAlarmActive;
+  static bool button2WasPressed = false;
+  static bool button2StartedDuringAlarm = false;
+  static bool button2ProvisioningHandled = false;
+  static uint32_t button2PressedAt = 0;
+
+  if (resetPressed && !button2WasPressed) {
+    button2PressedAt = currentMillis;
+    button2StartedDuringAlarm = wasAlarmActive;
+    button2ProvisioningHandled = false;
+  }
+  if (resetPressed && !button2StartedDuringAlarm &&
+      !button2ProvisioningHandled &&
+      currentMillis - button2PressedAt >= 2000) {
+    button2ProvisioningHandled = true;
+    if (startWifiProvisioning(getDeviceId(), isWifiConnected())) {
+      if (xSemaphoreTake(lcdMutex, portMAX_DELAY) == pdTRUE) {
+        displayBootStatus("BLE Wi-Fi setup active");
+        display.setCursor(0, 16);
+        display.println("Open CocoSeal app");
+        display.display();
+        xSemaphoreGive(lcdMutex);
+      }
+    } else {
+      Serial.println("BLE Wi-Fi provisioning could not be started");
+    }
+  }
+  if (!resetPressed) {
+    button2WasPressed = false;
+    button2StartedDuringAlarm = false;
+    button2ProvisioningHandled = false;
+    button2PressedAt = 0;
+  } else {
+    button2WasPressed = true;
+  }
 
   if (!resetPressed && (sosReceivedEspNow || sosReceivedLoRa)) {
     sosReceivedEspNow = false;
@@ -604,7 +639,7 @@ void loop() {
   lastBtn1State = currentBtn1State;
 
   if (resetPressed) {
-    if (!wasAlarmActive) {
+    if (!wasAlarmActive && !button2ProvisioningHandled) {
       displayBattery(getBatteryPercent());
 
       // 5秒後に画面をクリアするためのタイマーをセット
