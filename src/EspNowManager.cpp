@@ -2,8 +2,11 @@
 #include "DeviceIdentity.h"
 #include "LocalDatabase.h"
 #include "TradeProtocol.h"
+#include "WifiManager.h"
 
+#include <ctype.h>
 #include <WiFi.h>
+#include <esp_system.h>
 
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
@@ -12,6 +15,25 @@
 #define MESSAGE_TYPE_NAME_ANNOUNCEMENT 2
 #define PEER_NAME_CACHE_SIZE 10
 #define SYNCHRONIZED_DISPLAY_DELAY_MS 300
+
+struct GatewaySosCommunicationPacket {
+    CommunicationPacket packet;
+    char event_id[37];
+    uint8_t reserved[3];
+    uint32_t trigger_timestamp;
+    uint8_t signature[80];
+    uint8_t signature_length;
+};
+
+static_assert(offsetof(GatewaySosCommunicationPacket, event_id) == 64,
+              "SOS event ID protocol offset mismatch");
+static_assert(offsetof(GatewaySosCommunicationPacket, trigger_timestamp) ==
+                  104,
+              "SOS timestamp protocol offset mismatch");
+static_assert(offsetof(GatewaySosCommunicationPacket, signature) == 108,
+              "SOS signature protocol offset mismatch");
+static_assert(sizeof(GatewaySosCommunicationPacket) == 192,
+              "SOS packet layout must match the gateway firmware");
 
 namespace {
 struct EncounterHistory {
@@ -149,6 +171,66 @@ CommunicationPacket makePacket(int type) {
     return packet;
 }
 
+void generateUuid(char* output, size_t capacity) {
+    uint8_t bytes[16];
+    esp_fill_random(bytes, sizeof(bytes));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    snprintf(output, capacity,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+             "%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11],
+             bytes[12], bytes[13], bytes[14], bytes[15]);
+}
+
+bool makeSignedSosPacket(GatewaySosCommunicationPacket& packet) {
+    const char* deviceId = getDeviceId();
+    if (!deviceId || !deviceId[0]) {
+        Serial.println("SOS signing error: child device ID is unavailable");
+        return false;
+    }
+
+    packet = {};
+    packet.packet = makePacket(MESSAGE_TYPE_SOS);
+    generateUuid(packet.event_id, sizeof(packet.event_id));
+    if (!getTrustedUnixTime(packet.trigger_timestamp)) {
+        return false;
+    }
+
+    char lowerDeviceId[sizeof(packet.packet.device_id)];
+    snprintf(lowerDeviceId, sizeof(lowerDeviceId), "%s", deviceId);
+    for (char* character = lowerDeviceId; *character; ++character) {
+        *character = static_cast<char>(
+            tolower(static_cast<unsigned char>(*character)));
+    }
+
+    char canonicalMessage[96];
+    int messageLength = snprintf(
+        canonicalMessage, sizeof(canonicalMessage), "%s|%s|%lu",
+        packet.event_id, lowerDeviceId,
+        static_cast<unsigned long>(packet.trigger_timestamp));
+    if (messageLength <= 0 ||
+        static_cast<size_t>(messageLength) >= sizeof(canonicalMessage)) {
+        Serial.println("SOS signing error: canonical message is too long");
+        return false;
+    }
+
+    size_t signatureLength = 0;
+    if (!signDeviceMessage(
+            reinterpret_cast<const uint8_t*>(canonicalMessage),
+            static_cast<size_t>(messageLength), packet.signature,
+            sizeof(packet.signature), signatureLength) ||
+        signatureLength == 0 ||
+        signatureLength > sizeof(packet.signature)) {
+        Serial.println("SOS signing error: failed to sign event");
+        return false;
+    }
+    packet.signature_length = static_cast<uint8_t>(signatureLength);
+    return true;
+}
+
 bool sendPacket(const CommunicationPacket& packet) {
     esp_err_t result = esp_now_send(
         broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
@@ -184,7 +266,8 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
             macAddr, data, static_cast<size_t>(dataLen))) {
         return;
     }
-    if (dataLen != sizeof(CommunicationPacket)) {
+    if (dataLen != sizeof(CommunicationPacket) &&
+        dataLen != sizeof(GatewaySosCommunicationPacket)) {
         Serial.printf("Ignoring unknown ESP-NOW packet: %d bytes\n",
                       dataLen);
         return;
@@ -193,7 +276,8 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     int messageType = -1;
     memcpy(&messageType, data + offsetof(CommunicationPacket, type),
            sizeof(messageType));
-    if (messageType == MESSAGE_TYPE_NAME_ANNOUNCEMENT) {
+    if (messageType == MESSAGE_TYPE_NAME_ANNOUNCEMENT &&
+        dataLen == sizeof(CommunicationPacket)) {
         NameAnnouncementPacket namePacket = {};
         memcpy(&namePacket, data, sizeof(namePacket));
         namePacket.device_id[sizeof(namePacket.device_id) - 1] = '\0';
@@ -207,7 +291,13 @@ void onEspNowRecv(const uint8_t *macAddr, const uint8_t *data, int dataLen) {
     }
 
     CommunicationPacket packet = {};
-    memcpy(&packet, data, sizeof(packet));
+    if (dataLen == sizeof(GatewaySosCommunicationPacket)) {
+        GatewaySosCommunicationPacket signedSosPacket = {};
+        memcpy(&signedSosPacket, data, sizeof(signedSosPacket));
+        packet = signedSosPacket.packet;
+    } else {
+        memcpy(&packet, data, sizeof(packet));
+    }
     packet.device_id[sizeof(packet.device_id) - 1] = '\0';
     packet.stickerId[sizeof(packet.stickerId) - 1] = '\0';
 
@@ -367,6 +457,22 @@ void sendEncounterAnnouncement() {
 
 void sendSosNotification() {
     sendNameAnnouncement();
-    CommunicationPacket packet = makePacket(MESSAGE_TYPE_SOS);
-    sendPacket(packet);
+    GatewaySosCommunicationPacket packet = {};
+    if (makeSignedSosPacket(packet)) {
+        Serial.println("Sending signed SOS event to gateway over ESP-NOW");
+        setEspNowStatus(ESP_NOW_SENDING);
+        esp_err_t result = esp_now_send(
+            broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
+            sizeof(packet));
+        if (result != ESP_OK) {
+            Serial.printf("ESP-NOW signed SOS send failed: %d\n", result);
+            setEspNowStatus(ESP_NOW_SEND_FAILED);
+        }
+        return;
+    }
+
+    CommunicationPacket localAlertPacket = makePacket(MESSAGE_TYPE_SOS);
+    Serial.println(
+        "Could not create API-signed SOS; sending unsigned local alert");
+    sendPacket(localAlertPacket);
 }
