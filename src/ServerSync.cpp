@@ -10,7 +10,8 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/ecdsa.h>
 #include <time.h>
 
@@ -27,8 +28,10 @@
 #endif
 
 namespace {
-constexpr uint32_t SYNC_INTERVAL_MS = 5000;
-constexpr uint32_t TRADE_POOL_REFRESH_INTERVAL_MS = 30000;
+constexpr uint32_t SYNC_INTERVAL_MS = 10000;
+constexpr uint32_t TRADE_POOL_REFRESH_INTERVAL_MS = 60000;
+constexpr uint32_t DEVICE_PROFILE_REFRESH_INTERVAL_MS = 300000;
+constexpr uint32_t SERVER_SYNC_TASK_STACK_SIZE = 16384;
 constexpr uint32_t HTTP_TIMEOUT_MS = 3000;
 constexpr uint32_t SYNC_DIAGNOSTIC_MAGIC = 0x53594E43;
 
@@ -126,19 +129,9 @@ const char* syncStageName(uint32_t stage) {
     }
 }
 
-void setSyncDiagnosticStage(SyncDiagnosticStage stage, bool log = true) {
+void setSyncDiagnosticStage(SyncDiagnosticStage stage) {
     syncDiagnosticMagic = SYNC_DIAGNOSTIC_MAGIC;
     syncDiagnosticStage = static_cast<uint32_t>(stage);
-    if (!log) {
-        return;
-    }
-    Serial.printf(
-        "Server sync diagnostic: %s; free heap %u, largest block %u, loop stack watermark %u\n",
-        syncStageName(syncDiagnosticStage),
-        static_cast<unsigned>(ESP.getFreeHeap()),
-        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
-        static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-    Serial.flush();
 }
 
 String toLowerString(const char* value) {
@@ -190,35 +183,6 @@ int postJson(const char* path,
              bool authenticated,
              String& responseBody) {
     setSyncDiagnosticStage(SYNC_STAGE_HTTPS_BEGIN);
-    String serverHost(SERVER_BASE_URL);
-    int schemeEnd = serverHost.indexOf("://");
-    if (schemeEnd >= 0) {
-        serverHost.remove(0, schemeEnd + 3);
-    }
-    int pathStart = serverHost.indexOf('/');
-    if (pathStart >= 0) {
-        serverHost.remove(pathStart);
-    }
-    int portStart = serverHost.indexOf(':');
-    if (portStart >= 0) {
-        serverHost.remove(portStart);
-    }
-
-    IPAddress serverAddress;
-    if (!WiFi.hostByName(serverHost.c_str(), serverAddress)) {
-        Serial.printf("Server sync transport: DNS lookup failed for %s\n",
-                      serverHost.c_str());
-    } else {
-        Serial.printf("Server sync transport: %s resolved to %s\n",
-                      serverHost.c_str(), serverAddress.toString().c_str());
-        WiFiClient tcpProbe;
-        bool tcpConnected =
-            tcpProbe.connect(serverAddress, 443, HTTP_TIMEOUT_MS);
-        Serial.printf("Server sync transport: TCP port 443 %s\n",
-                      tcpConnected ? "reachable" : "unreachable");
-        tcpProbe.stop();
-    }
-
     WiFiClientSecure client;
     client.setCACert(SERVER_ROOT_CA);
 
@@ -253,9 +217,6 @@ int postJson(const char* path,
     setSyncDiagnosticStage(SYNC_STAGE_HTTP_RESPONSE);
     if (status > 0) {
         responseBody = http.getString();
-        Serial.printf("Server sync: %s returned HTTP %d (%u response bytes)\n",
-                      path, status,
-                      static_cast<unsigned>(responseBody.length()));
     } else {
         Serial.printf("Server sync error: HTTPS request failed (%s)\n",
                       http.errorToString(status).c_str());
@@ -264,6 +225,9 @@ int postJson(const char* path,
         Serial.printf("Server sync transport: TLS error %d (%s)\n",
                       tlsErrorCode,
                       tlsErrorCode == 0 ? "none" : tlsError);
+    }
+    if (status >= 400) {
+        Serial.printf("Server sync: %s returned HTTP %d\n", path, status);
     }
     http.end();
     return status;
@@ -334,10 +298,6 @@ bool fetchDeviceProfile() {
     setSyncDiagnosticStage(SYNC_STAGE_HTTP_RESPONSE);
     if (status > 0) {
         responseBody = http.getString();
-        Serial.printf("Server sync: GET /devices/device returned HTTP %d "
-                      "(%u response bytes)\n",
-                      status,
-                      static_cast<unsigned>(responseBody.length()));
     } else {
         Serial.printf("Server sync error: device-profile request failed (%s)\n",
                       http.errorToString(status).c_str());
@@ -364,7 +324,7 @@ bool fetchDeviceProfile() {
     }
 
     setLocalDeviceName(name);
-    Serial.printf("BOOT: own device name: %s\n", name);
+    Serial.println("Server sync: device profile refreshed");
     return true;
 }
 
@@ -400,10 +360,6 @@ bool fetchServerTradePool() {
     setSyncDiagnosticStage(SYNC_STAGE_HTTP_RESPONSE);
     if (status > 0) {
         responseBody = http.getString();
-        Serial.printf("Server sync: GET /devices/trading_seals returned HTTP %d "
-                      "(%u response bytes)\n",
-                      status,
-                      static_cast<unsigned>(responseBody.length()));
     } else {
         Serial.printf("Server sync error: trade-pool HTTPS request failed (%s)\n",
                       http.errorToString(status).c_str());
@@ -470,12 +426,7 @@ bool fetchServerTradePool() {
         Serial.println("Server sync error: failed to apply server trade pool");
         return false;
     }
-    for (size_t i = 0; i < entryCount; ++i) {
-        Serial.printf("Server sync: trade-pool seal_id=%s count=%u\n",
-                      entries[i].sealId,
-                      static_cast<unsigned>(entries[i].count));
-    }
-    Serial.printf("Server sync: loaded %u tradeable seal types from server\n",
+    Serial.printf("Server sync: trade pool refreshed (%u seal types)\n",
                   static_cast<unsigned>(entryCount));
     return true;
 }
@@ -589,7 +540,6 @@ bool syncEvent(LocalEvent& event, uint32_t currentTimestampUnix) {
                       event.eventId);
         return false;
     }
-    Serial.printf("Server sync: uploaded event %s\n", event.eventId);
     return true;
 }
 
@@ -622,9 +572,14 @@ bool syncBatteryStatus(uint32_t currentTimestampUnix) {
         return false;
     }
 
-    Serial.printf("Server sync: battery updated to %.1f%%\n",
-                  batteryPercent);
     return true;
+}
+
+void serverSyncTask(void*) {
+    for (;;) {
+        processServerSync();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 }
 
@@ -672,48 +627,57 @@ void processServerSync() {
     }
     lastSyncAttempt = nowMillis;
 
-    setSyncDiagnosticStage(SYNC_STAGE_CHECK_WIFI, false);
+    setSyncDiagnosticStage(SYNC_STAGE_CHECK_WIFI);
     if (!wifiConnected) {
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
     }
 
-    if (!deviceActivated && !activateDevice()) {
+    if (!deviceActivated) {
+        activateDevice();
+        lastSyncAttempt = millis();
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
     }
 
     uint32_t currentTimestampUnix = 0;
-    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME, false);
+    setSyncDiagnosticStage(SYNC_STAGE_CHECK_TIME);
     if (!getTrustedUnixTime(currentTimestampUnix)) {
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
         return;
     }
-    if (batteryUpdatePending &&
-        syncBatteryStatus(currentTimestampUnix)) {
-        batteryUpdatePending = false;
+    if (batteryUpdatePending) {
+        if (syncBatteryStatus(currentTimestampUnix)) {
+            batteryUpdatePending = false;
+        }
+        lastSyncAttempt = millis();
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
     }
 
     if (!deviceProfileRefreshAttempted ||
         nowMillis - lastDeviceProfileRefreshAttempt >=
-            TRADE_POOL_REFRESH_INTERVAL_MS) {
-        deviceProfileRefreshAttempted = true;
+            DEVICE_PROFILE_REFRESH_INTERVAL_MS) {
         lastDeviceProfileRefreshAttempt = nowMillis;
-        fetchDeviceProfile();
+        deviceProfileRefreshAttempted = fetchDeviceProfile();
+        lastSyncAttempt = millis();
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
     }
     if (!tradePoolRefreshAttempted ||
         nowMillis - lastTradePoolRefreshAttempt >=
             TRADE_POOL_REFRESH_INTERVAL_MS) {
-        tradePoolRefreshAttempted = true;
         lastTradePoolRefreshAttempt = nowMillis;
-        if (!fetchServerTradePool()) {
-            syncDiagnosticMagic = 0;
-            syncDiagnosticStage = SYNC_STAGE_IDLE;
-            return;
-        }
+        tradePoolRefreshAttempted = fetchServerTradePool();
+        lastSyncAttempt = millis();
+        syncDiagnosticMagic = 0;
+        syncDiagnosticStage = SYNC_STAGE_IDLE;
+        return;
     }
 
     setSyncDiagnosticStage(SYNC_STAGE_FIND_EVENT);
@@ -738,9 +702,11 @@ void processServerSync() {
         }
     }
     if (!hasSyncableEvent) {
-        if (hasUnresolvableTimestamp) {
+        static bool oldEventsWarningLogged = false;
+        if (hasUnresolvableTimestamp && !oldEventsWarningLogged) {
             Serial.println(
                 "Server sync: old events lack a trustworthy timestamp");
+            oldEventsWarningLogged = true;
         }
         syncDiagnosticMagic = 0;
         syncDiagnosticStage = SYNC_STAGE_IDLE;
@@ -751,7 +717,19 @@ void processServerSync() {
         if (syncEvent(pendingEvent, currentTimestampUnix)) {
             batteryUpdatePending = false;
         }
+        lastSyncAttempt = millis();
     }
     syncDiagnosticMagic = 0;
     syncDiagnosticStage = SYNC_STAGE_IDLE;
+}
+
+void startServerSyncTask() {
+    BaseType_t result = xTaskCreateUniversal(
+        serverSyncTask, "ServerSync", SERVER_SYNC_TASK_STACK_SIZE, nullptr, 1,
+        nullptr, 0);
+    if (result != pdPASS) {
+        Serial.println("Server sync error: failed to create sync task");
+        return;
+    }
+    Serial.println("Server sync task started");
 }

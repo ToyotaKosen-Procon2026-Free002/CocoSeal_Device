@@ -421,6 +421,9 @@ void setup() {
 #endif
   displayBootStatus("Ready");
   completeBootStep(BOOT_STAGE_COMPLETE);
+#if SERVER_SYNC_RUNTIME_ENABLED
+  startServerSyncTask();
+#endif
 }
   
 
@@ -587,14 +590,6 @@ void loop() {
       }
   }
 
-#if SERVER_SYNC_RUNTIME_ENABLED
-  if (!isSynchronizedEncounterDisplayPending() &&
-      !needDisplayClear && !tradeOutcomePending &&
-      !encounterSequenceActive) {
-    processServerSync();
-  }
-#endif
-
   if (tradeDebugVisible &&
       static_cast<int32_t>(currentMillis - tradeDebugHideAt) >= 0 &&
       !isAlarmActive && !encounterSequenceActive && !encounterFlag) {
@@ -679,8 +674,5 @@ void loop() {
   digitalWrite(RED_LED_PIN, outRedLed);
   digitalWrite(GREEN_LED_PIN, outGreenLed);
 
-  delay(isSynchronizedEncounterDisplayPending() || tradeOutcomePending ||
-                encounterSequenceActive
-            ? 20
-            : 100);
+  delay(20);
 }

@@ -2,3 +2,4 @@
 
 void logPreviousServerSyncDiagnostic();
 void processServerSync();
+void startServerSyncTask();
