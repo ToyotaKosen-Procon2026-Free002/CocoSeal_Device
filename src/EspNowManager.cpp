@@ -429,9 +429,48 @@ void sendEncounterAnnouncement() {
 }
 
 void sendSosNotification() {
-    CommunicationPacket packet = makePacket(MESSAGE_TYPE_SOS);
-    Serial.println(
-        "Sending Wi-Fi-independent SOS alert over ESP-NOW (64-byte packet)");
-    setEspNowStatus(ESP_NOW_SENDING);
-    sendPacket(packet);
+    uint32_t triggerTimestamp = 0;
+    if (!getTrustedUnixTime(triggerTimestamp)) {
+        Serial.println(
+            "SOS signing unavailable: trusted network time is required; "
+            "sending unsigned emergency packet for local alert only");
+        sendPacket(makePacket(MESSAGE_TYPE_SOS));
+        return;
+    }
+
+    SosCommunicationPacket packet = {};
+    packet.packet = makePacket(MESSAGE_TYPE_SOS);
+    generateEventId(packet.event_id, sizeof(packet.event_id));
+    packet.trigger_timestamp = triggerTimestamp;
+
+    String canonicalMessage = String(packet.event_id) + "|" + getDeviceId() +
+                              "|" + String(triggerTimestamp);
+    size_t signatureLength = 0;
+    if (!signDeviceMessage(
+            reinterpret_cast<const uint8_t*>(canonicalMessage.c_str()),
+            canonicalMessage.length(), packet.signature,
+            sizeof(packet.signature), signatureLength) ||
+        signatureLength == 0 ||
+        signatureLength > sizeof(packet.signature)) {
+        Serial.println(
+            "SOS signing failed; sending unsigned emergency packet for "
+            "local alert only");
+        sendPacket(packet.packet);
+        return;
+    }
+
+    packet.signature_length = static_cast<uint8_t>(signatureLength);
+    esp_err_t result = esp_now_send(
+        broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
+        sizeof(packet));
+    if (result != ESP_OK) {
+        Serial.printf("Signed SOS ESP-NOW send failed: %d\n", result);
+        setEspNowStatus(ESP_NOW_SEND_FAILED);
+        sendPacket(packet.packet);
+        return;
+    }
+    Serial.printf("Signed SOS sent: event=%s timestamp=%lu signature=%u bytes\n",
+                  packet.event_id,
+                  static_cast<unsigned long>(packet.trigger_timestamp),
+                  static_cast<unsigned>(packet.signature_length));
 }
