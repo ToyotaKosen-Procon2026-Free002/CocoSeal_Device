@@ -31,7 +31,7 @@ lower(event_id)|lower(my_id)|lower(partner_id)|gateway_flag|lower(send_seal_id)|
 `partner_name`には遭遇時に相手から受信した表示名を含めます。名前通知を受け取っていない既存イベントでは空文字列です。この値はイベント署名のcanonical文字列には含めず、実際のJSON本文を使うリクエスト署名には含めます。
 親機から配布されたシールを受信した遭遇では、親機のUUIDを`partner_id`、`partner_is_gateway`を`true`、受信したシールIDを`receive_seal_id`として、子機自身が署名付きで`POST /devices/status`へ送ります。サーバーの`DeviceUpdateRequest`では`device_id`は子機UUID、`request_id`はイベントUUID、`battery`は0〜100、`timestamp`は送信時刻、`nearby_communications`はこの遭遇イベントを含む配列です。正常に登録されたイベントの`receive_seal_id`は、サーバー側の子機在庫へ追加されます。
 
-ESP-NOWの親機配布パケットは64バイトで、`device_id`（37バイト）、`type`（32-bit、オフセット40）、`stickerId`（16バイト、オフセット44）、`isGateway`（オフセット60）です。受信側は`type=0`かつ`isGateway=true`のパケットを親機遭遇として扱い、パケット内の`stickerId`を上記の`receive_seal_id`として記録します。親機は続けて`type=2`、`isGateway=true`の同じレイアウトのパケットを送り、オフセット44の`stickerId`領域にスポット名（最大15 UTF-8バイト）を載せます。子機は親機IDに対応付けて名前をキャッシュし、遭遇表示の「をとおったよ」の前に表示します。
+ESP-NOWの親機配布パケットは64バイトで、`device_id`（37バイト）、`type`（32-bit、オフセット40）、`stickerId`（16バイト、オフセット44）、`isGateway`（オフセット60）です。受信側は`type=0`かつ`isGateway=true`のパケットを親機遭遇として扱い、パケット内の`stickerId`を上記の`receive_seal_id`として記録します。
 
 有効化リクエストの例（`public_key`の値は16進数130文字です）。既存の登録名を上書きしないよう、ファームウェアは任意項目の`name`を送らず、`GET /devices/device`で取得した名前を無線通知に使用します。
 
@@ -96,10 +96,16 @@ ESP-NOWの親機配布パケットは64バイトで、`device_id`（37バイト�
 
 `DeviceUpdateRequest`の`battery`は必須項目です。ファームウェアはWi-Fi接続または再接続後、およびすれ違い・交換イベントの送信時に、0〜100のパーセント値とUTCの更新時刻を送ります。イベントを伴わない更新では`nearby_communications`は空配列です。サーバーは既存の`update_device_status()`で`battery`と`last_timestamp`を更新するため、追加のAPI変更は不要です。
 
-## SOS同期
+## SOS同期（追加設計が必要）
 
-`/devices/sos_gateway`は親機と子機の両方を認証します。親機は必須の`X-Gateway-Id`と`X-Gateway-Signature`ヘッダーを使い、現在のサーバー認証実装では親機IDとリクエスト本文を連結したバイト列に署名します。本文の`signature`は、SOSイベントを発生させた子機の署名です。サーバー側の子機署名対象は`event_id|child_id|trigger_timestamp_unix`（イベントIDと子機IDは小文字）です。
+子機はSOSをESP-NOWで周囲へ通知し、LoRaでは親機の現行受信形式に合わせて`SOS:<child UUID>\n`を送ります。これにより親機はLoRa受信時にも子機IDを取得できます。ただし、無線通知にはSOSイベントID・信頼できる発生時刻・子機署名が含まれず、現行の親機は`/devices/sos`へ送る処理も実装していません。そのため、SOSイベントはローカルに保持し、サーバーへは送信しません。
 
-現行の子機はSOS送信をWi-Fi・ネットワーク時刻に依存させず、従来の64バイト`CommunicationPacket`（`type=1`）をESP-NOWで、`SOS:<子機UUID>\n`をLoRaで送信します。親機・近くの子機でローカル警報を鳴らせますが、子機署名と発生時刻を付けないため、このSOSは親機からサーバー/FCMへ中継されません。サーバー同期のためのWi-Fiは、通常の電池・遭遇・交換データ同期には引き続き使用します。
+また、現行サーバーの`SosRequest.signature`はJSON上の`bytes`であるため、イベント署名のhex対応が必要です。ただし、現在の署名対象には`gateway_id`と`receive_timestamp`が含まれます。子機はどの親機が受信するか、実際の受信時刻がいつかを事前に知れないため、この全項目を子機に署名させる方式は中継設計と両立しません。SOS同期を実装する際は、次の変更をサーバー・親機・子機で合わせて行ってください。
 
-サーバー/FCMへのSOS中継を再度有効にする場合は、Wi-Fiへ依存しない信頼可能な発生時刻の確保、子機イベントID・署名の永続化、親機での署名付きイベント受信と再送、子機・親機・サーバー間の冪等性を一体で実装してください。
+1. **子機イベントの識別と署名**：子機がSOS発生時に一意で永続的な`event_id`、`child_id`、信頼できる`trigger_timestamp`を記録し、再送時も同じ値を使います。署名対象は、少なくとも`event_id|child_id|trigger_timestamp_unix`とし、子機公開鍵で検証します。NTP時刻がないまま発生し、その後再起動したイベントは正確な発生時刻を復元できないため、時刻を捏造せず送信を保留します。
+2. **親機による中継情報**：親機は受信した子機ID・SOSイベントID・発生時刻を保持し、自身のIDと実際の`receive_timestamp`を付けてサーバーへ中継します。親機は`X-Gateway-Id` / `X-Gateway-Signature`で認証し、親機署名の対象は少なくとも`event_id|child_id|gateway_id|trigger_timestamp_unix|receive_timestamp_unix`とします。サーバーは認証済み親機IDと本文の`gateway_id`が一致することを確認してください。
+3. **`/devices/sos`の署名検証**：現行の子機署名だけで全項目を検証する方式から、子機の発生イベント署名と親機の受信・中継署名を別々に検証する方式へ変更してください。`SosRequest`に子機署名・親機署名を別フィールドで持たせるか、子機イベントと親機受信記録を別モデルに分けます。両署名ともJSONではhex文字列で受け取り、復号後に検証してください。
+4. **SOSの重複排除とDB更新**：`event_id`を冪等性キーにし、同じSOSが複数の親機から届いた場合も、通知・DB記録を重複生成しない方針を定義してください。後続の親機受信情報を複数保持する必要がある場合は、SOSイベント本体と受信親機記録を別テーブルにするなど、イベントの一意性と受信履歴を分けてください。SOS記録のコミット完了後にだけ成功応答を返します。
+5. **無線プロトコル変更**：親機が上記情報を中継できるよう、子機のESP-NOWまたはLoRa SOS通知に`event_id`、発生時刻、子機署名を追加し、親機側の受信・キュー・サーバー送信・再送処理も実装してください。現在のLoRa形式は子機IDのみを運び、サーバー検証に必要なSOSイベント情報は運びません。
+
+これらが揃うまでは、現行どおりSOS同期を無効のままにしてください。APIのSOS契約と親機・子機双方の無線実装が確定した後、ファームウェア側の同期処理を追加します。
