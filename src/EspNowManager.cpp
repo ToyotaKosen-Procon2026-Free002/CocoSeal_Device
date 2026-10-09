@@ -2,8 +2,12 @@
 #include "DeviceIdentity.h"
 #include "LocalDatabase.h"
 #include "TradeProtocol.h"
+#include "WifiManager.h"
 
 #include <WiFi.h>
+#include <esp_system.h>
+#include <mbedtls/ecdsa.h>
+#include <time.h>
 
 #define COOL_DOWN_TIME 30000
 #define ENCOUNTER_HISTORY_SIZE 10
@@ -188,6 +192,21 @@ bool sendPacket(const CommunicationPacket& packet) {
         return false;
     }
     return true;
+}
+
+void generateEventId(char* output, size_t capacity) {
+    uint8_t bytes[16];
+    esp_fill_random(bytes, sizeof(bytes));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+
+    snprintf(output, capacity,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+             "%02x%02x%02x%02x%02x%02x",
+             bytes[0], bytes[1], bytes[2], bytes[3],
+             bytes[4], bytes[5], bytes[6], bytes[7],
+             bytes[8], bytes[9], bytes[10], bytes[11],
+             bytes[12], bytes[13], bytes[14], bytes[15]);
 }
 
 bool sendNameAnnouncement() {
@@ -410,7 +429,48 @@ void sendEncounterAnnouncement() {
 }
 
 void sendSosNotification() {
-    sendNameAnnouncement();
-    CommunicationPacket packet = makePacket(MESSAGE_TYPE_SOS);
-    sendPacket(packet);
+    uint32_t triggerTimestamp = 0;
+    if (!getTrustedUnixTime(triggerTimestamp)) {
+        Serial.println(
+            "SOS signing unavailable: trusted network time is required; "
+            "sending unsigned emergency packet for local alert only");
+        sendPacket(makePacket(MESSAGE_TYPE_SOS));
+        return;
+    }
+
+    SosCommunicationPacket packet = {};
+    packet.packet = makePacket(MESSAGE_TYPE_SOS);
+    generateEventId(packet.event_id, sizeof(packet.event_id));
+    packet.trigger_timestamp = triggerTimestamp;
+
+    String canonicalMessage = String(packet.event_id) + "|" + getDeviceId() +
+                              "|" + String(triggerTimestamp);
+    size_t signatureLength = 0;
+    if (!signDeviceMessage(
+            reinterpret_cast<const uint8_t*>(canonicalMessage.c_str()),
+            canonicalMessage.length(), packet.signature,
+            sizeof(packet.signature), signatureLength) ||
+        signatureLength == 0 ||
+        signatureLength > sizeof(packet.signature)) {
+        Serial.println(
+            "SOS signing failed; sending unsigned emergency packet for "
+            "local alert only");
+        sendPacket(packet.packet);
+        return;
+    }
+
+    packet.signature_length = static_cast<uint8_t>(signatureLength);
+    esp_err_t result = esp_now_send(
+        broadcastAddress, reinterpret_cast<const uint8_t*>(&packet),
+        sizeof(packet));
+    if (result != ESP_OK) {
+        Serial.printf("Signed SOS ESP-NOW send failed: %d\n", result);
+        setEspNowStatus(ESP_NOW_SEND_FAILED);
+        sendPacket(packet.packet);
+        return;
+    }
+    Serial.printf("Signed SOS sent: event=%s timestamp=%lu signature=%u bytes\n",
+                  packet.event_id,
+                  static_cast<unsigned long>(packet.trigger_timestamp),
+                  static_cast<unsigned>(packet.signature_length));
 }
