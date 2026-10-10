@@ -627,7 +627,7 @@ void loop() {
 
   // アラーム状態ならブザーと赤LEDをONに上書き
   if (isAlarmActive && !resetPressed) {
-    outBuzzer = LOW;
+    outBuzzer = HIGH;
     outRedLed = LOW;
   }
 
