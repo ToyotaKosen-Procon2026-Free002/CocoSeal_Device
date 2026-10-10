@@ -137,8 +137,7 @@ void displayEncounter(EncounterSource source,
             idLine1,
             idLine2,
             idLine3,
-            "とすれちがい",
-            "ました"
+            "とすれちがい"
         };
         drawJapaneseLines(lines, sizeof(lines) / sizeof(lines[0]));
     }

@@ -506,7 +506,7 @@ void loop() {
     encounterFlag = false;
     encounterSequenceActive = true;
     parentEncounterIntro = lastEncounterWasParent;
-    encounterScreenUntil = currentMillis + 3000;
+    encounterScreenUntil = currentMillis + 5000;
     tradeDebugVisible = false;
     needDisplayClear = false;
     displayEncounter(lastEncounterWasParent ? ENCOUNTER_SOURCE_PARENT
@@ -521,7 +521,7 @@ void loop() {
     if (parentEncounterIntro) {
       parentEncounterIntro = false;
       displayParentEncounterReward();
-      encounterScreenUntil = currentMillis + 3000;
+      encounterScreenUntil = currentMillis + 5000;
     } else {
       encounterSequenceActive = false;
       if (tradeOutcomePending) {
@@ -539,11 +539,10 @@ void loop() {
       !encounterSequenceActive && !isAlarmActive) {
     tradeOutcomePending = false;
 
-    // ステータスが "COMPLETE:" から始まっていれば成功とみなす
     if (strncmp(pendingTradeOutcome, "COMPLETE:", 9) == 0) {
         tradeDebugVisible = true;
-        tradeDebugHideAt = currentMillis + 3000;
-        displayTradeSuccess();  // 成功画面を表示
+        tradeDebugHideAt = currentMillis + 5000;
+        displayTradeSuccess();
         displayClearTime = tradeDebugHideAt;
         needDisplayClear = true;
     } else {
@@ -569,7 +568,7 @@ void loop() {
 
   // 定期的に自分のデータを周囲に送信
   static unsigned long lastSendTime = 0;
-  if (currentMillis - lastSendTime >= 5000) { // 5秒ごとに送信
+  if (currentMillis - lastSendTime >= 10000) { // 10秒ごとに送信
     lastSendTime = currentMillis;
     sendEncounterAnnouncement();
   }
